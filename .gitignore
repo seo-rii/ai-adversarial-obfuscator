@@ -1,0 +1,29 @@
+# Dependencies and local caches
+node_modules/
+.npm/
+.cache/
+*.tsbuildinfo
+
+# Generated bundles, reports, and package archives
+dist/
+coverage/
+release/
+*.tgz
+/ai-adversarial-obfuscator-*.zip
+ai-obfuscation-report.json
+
+# Local configuration and editor files
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Workspace bookkeeping
+/RISK_REGISTER.md
+/STAGING.md
+/DONE.md
+/MISTAKES.md

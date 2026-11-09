@@ -1,0 +1,51 @@
+{
+  "name": "ai-adversarial-obfuscator",
+  "version": "0.1.0",
+  "description": "JavaScript obfuscation with optional adversarial LLM-analysis decoys, CLI and Vite plugin",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/core.d.mts",
+      "default": "./src/core.mjs"
+    },
+    "./vite": {
+      "types": "./src/vite.d.mts",
+      "default": "./src/vite.mjs"
+    }
+  },
+  "bin": {
+    "ai-obfuscate": "./bin/ai-obfuscate.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:types": "tsc -p test/tsconfig.json",
+    "test:unit": "node --test test/core.test.mjs test/cli.test.mjs",
+    "test:vite": "node --test test/vite.test.mjs",
+    "build:fixture": "vite build --config fixtures/vite/vite.config.mjs"
+  },
+  "dependencies": {
+    "javascript-obfuscator": "^5.10.0"
+  },
+  "peerDependencies": {
+    "vite": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  }
+}

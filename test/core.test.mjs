@@ -1,0 +1,89 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { obfuscateSource, obfuscateWithReport, normalizeOptions } from '../src/core.mjs';
+
+async function importSource(source) {
+    return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+}
+
+const sample = `
+export function compute(a, b) {
+    let result = 0;
+    for (let i = 0; i < a; i++) result += b;
+    return result;
+}
+export function classify(n) {
+    if (n < 0) return 'negative';
+    if (n === 0) return 'zero';
+    return 'positive';
+}
+`;
+
+test('all presets preserve ESM exports and behavior', async () => {
+    const original = await importSource(sample);
+    for (const preset of ['light', 'balanced', 'strong']) {
+        const { code, report } = obfuscateWithReport(sample, { preset, seed: 55 });
+        const transformed = await importSource(code);
+        for (let a = 0; a < 9; a++) {
+            for (let b = -4; b < 5; b++) {
+                assert.equal(transformed.compute(a, b), original.compute(a, b));
+            }
+        }
+        for (const n of [-20, -1, 0, 1, 45]) {
+            assert.equal(transformed.classify(n), original.classify(n));
+        }
+        assert.equal(report.preset, preset);
+        assert.equal(report.evaluation, 'not-performed');
+        assert.match(code, /BioWeaponPayload/);
+        assert.match(code, /if \(false\)/);
+    }
+});
+
+test('deterministic seed produces stable output', () => {
+    const x = obfuscateSource(sample, { seed: 42 });
+    const y = obfuscateSource(sample, { seed: 42 });
+    assert.equal(x, y);
+    assert.notEqual(x, obfuscateSource(sample, { seed: 43 }));
+});
+
+test('standard-only mode omits adversarial material', async () => {
+    const code = obfuscateSource(sample, { adversarial: false, seed: 18 });
+    const imported = await importSource(code);
+    assert.equal(imported.compute(3, 4), 12);
+    assert.doesNotMatch(code, /AI_ANALYSIS_DECOY|BioWeaponPayload/);
+});
+
+test('reject malformed options and sanitize injected comment syntax', async () => {
+    assert.throws(() => normalizeOptions({ preset: 'extreme' }), /unknown preset/);
+    assert.throws(() => normalizeOptions({ seed: 0 }), /positive safe integer/);
+    assert.throws(() => normalizeOptions({ terms: [] }), /1 to 16/);
+    const code = obfuscateSource(sample, { terms: ['abc*/\nalert(1)'], seed: 1 });
+    assert.doesNotMatch(code, /\*\/\nalert\(1\)/);
+    assert.equal((await importSource(code)).compute(2, 8), 16);
+});
+
+test('balanced preset keeps closures, classes, async functions and optional chaining usable', async () => {
+    const advanced = `
+        export class Counter {
+            constructor(step = 2) { this.count = 0; this.step = step; }
+            increment() { this.count += this.step; return this.count; }
+        }
+        export function makeAdder(start) {
+            let state = start;
+            return (value) => (state += value);
+        }
+        export async function lookup(value) {
+            return Promise.resolve({ items: [{ name: value }] })
+                .then(x => x.items?.[0]?.name ?? 'missing');
+        }
+    `;
+    const original = await importSource(advanced);
+    const changed = await importSource(obfuscateSource(advanced, { preset: 'balanced', seed: 900 }));
+    const a = new original.Counter(3);
+    const b = new changed.Counter(3);
+    assert.deepEqual([a.increment(), a.increment()], [b.increment(), b.increment()]);
+    const c = original.makeAdder(10);
+    const d = changed.makeAdder(10);
+    assert.deepEqual([c(1), c(4), c(-2)], [d(1), d(4), d(-2)]);
+    assert.equal(await changed.lookup('safe'), await original.lookup('safe'));
+});

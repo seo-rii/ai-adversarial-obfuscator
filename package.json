@@ -2,10 +2,27 @@
   "name": "ai-adversarial-obfuscator",
   "version": "0.1.0",
   "description": "JavaScript obfuscation with optional adversarial LLM-analysis decoys, CLI and Vite plugin",
+  "license": "MIT",
+  "author": "Seohyun Lee <me@seorii.page>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seo-rii/ai-adversarial-obfuscator.git"
+  },
+  "homepage": "https://github.com/seo-rii/ai-adversarial-obfuscator#readme",
+  "bugs": {
+    "url": "https://github.com/seo-rii/ai-adversarial-obfuscator/issues"
+  },
+  "keywords": [
+    "javascript",
+    "obfuscation",
+    "vite-plugin",
+    "cli",
+    "code-analysis"
+  ],
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.12.0"
   },
   "exports": {
     ".": {
@@ -24,6 +41,7 @@
     "src",
     "bin",
     "README.md",
+    "README.ko.md",
     "LICENSE"
   ],
   "scripts": {

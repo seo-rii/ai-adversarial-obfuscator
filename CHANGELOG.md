@@ -6,7 +6,7 @@ Changes to the project are recorded here. Version entries describe repository de
 
 ### Added
 
-- Source-map generation in the core API through `sourceMap: true`, with a separate `map` result and offsets for prepended markers.
+- Source-map generation in the core API through `sourceMap: true`, with a separate `map` result and trailing inert markers.
 - Vite source-map composition and emission for `true`, `'inline'`, and `'hidden'`, following Vite's configuration automatically.
 - Integration coverage for minification backends, original error locations, excluded chunks, repeated builds, and multiple outputs.
 
@@ -15,6 +15,12 @@ Changes to the project are recorded here. Version entries describe repository de
 - Support Vite's default, Oxc, esbuild, and Terser minification before chunk obfuscation, replacing the minify and source-map configuration restrictions.
 - Keep minification enabled for excluded chunks and isolate report entries for each output and rebuild.
 - Return individual transformation maps from separate ordered hooks so Rolldown handles all map composition and emission without a separate remapping dependency.
+
+### Fixed
+
+- Preserve strict-mode directives and executable hashbangs by appending core decoy blocks after the transformed source.
+- Protect CLI input files from forced writes through filesystem aliases and prevent report paths from overwriting generated JavaScript.
+- Resolve the vulnerable transitive dependency chain using compatible lockfile versions before public release.
 
 ## [0.1.0] - 2026-11-10
 

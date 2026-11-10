@@ -22,7 +22,7 @@ JavaScript 난독화에 비기능적 마커를 선택적으로 추가하여 LLM 
 
 **Node.js 22.12 이상**이 필요하며, 개발에는 **Node.js 24 LTS**를 권장합니다. Vite 연동은 **Vite 8**을 대상으로 하며, 코어 API와 CLI에는 Vite 애플리케이션이 필요하지 않습니다.
 
-접근 권한이 있는 GitHub 계정으로 저장소를 복제합니다.
+저장소를 복제합니다.
 
 ```bash
 git clone https://github.com/seo-rii/ai-adversarial-obfuscator.git
@@ -32,7 +32,7 @@ npm test
 npm run test:types
 ```
 
-저장소는 현재 비공개입니다. 코드는 MIT 라이선스이며, 실수로 npm에 게시하지 않도록 패키지에 `private`이 설정되어 있습니다. 아래 사용법은 공개 npm 레지스트리에 패키지가 게시되어 있다고 가정하지 않습니다.
+코드는 MIT 라이선스입니다. 실수로 npm에 게시하지 않도록 패키지에 `private`이 설정되어 있으며, 이 설정은 GitHub 저장소 공개 여부와 별개입니다. 아래 사용법은 공개 npm 레지스트리에 패키지가 게시되어 있다고 가정하지 않습니다.
 
 다른 프로젝트에서 사용하려면 로컬 체크아웃 경로로 설치합니다.
 
@@ -72,6 +72,8 @@ node bin/ai-obfuscate.mjs --help
 
 `-o`를 생략하면 파일은 `input.obfuscated.js`로, 디렉터리는 같은 상위 경로의 `<input>-obfuscated`로 출력합니다. 디렉터리 처리 시 JavaScript 파일만 복사하므로 필요한 다른 자산은 별도로 복사해야 합니다. CLI는 `node_modules`, `.git`, `.vite`를 건너뛰며 입력 심볼릭 링크를 따라가지 않습니다. 입력과 출력 경로는 겹칠 수 없습니다. 기존 출력 파일을 덮어쓰려면 `--force`를 지정합니다.
 
+`--force`를 사용해도 출력·보고서 파일의 심볼릭 링크와 입력 파일을 가리키는 별칭 경로는 거부합니다. 보고서는 출력 디렉터리 트리 밖에 저장해야 합니다. 모든 저장 경로를 확인한 뒤 출력을 시작합니다.
+
 CLI 보고서는 파일별 변환 보고서의 배열입니다. 진행 상황과 오류는 stderr로 출력하므로 stdout으로 변환된 코드를 전달할 수 있습니다.
 
 ## 프로그램에서 사용하기
@@ -95,7 +97,7 @@ console.log(report.beforeBytes, report.afterBytes);
 
 루트 진입점은 문자열만 반환하는 `obfuscateSource(source, options, context)`와 `normalizeOptions(options)`, `createAdversarialBlock(options, context)`, `DEFAULT_TERMS`, `PRESETS`도 제공합니다. TypeScript 선언은 `src/*.d.mts`에 포함되어 있습니다.
 
-소스맵이 필요하면 `obfuscateWithReport`에 `sourceMap: true`를 전달합니다. 반환값의 `map`은 앞에 추가된 마커 블록의 위치 차이까지 반영하여 결과 코드를 입력 코드에 연결합니다. 기본값은 `null`입니다. 코어 API는 파일을 쓰거나 `sourceMappingURL` 주석을 추가하지 않으므로 호출자가 소스맵을 저장하고 연결해야 합니다. CLI에는 소스맵 플래그가 없습니다.
+소스맵이 필요하면 `obfuscateWithReport`에 `sourceMap: true`를 전달합니다. 반환값의 `map`은 결과 코드를 입력 코드에 연결합니다. 미끼 블록은 뒤에 추가하여 directive prologue, hashbang과 매핑된 코드의 위치를 보존합니다. 기본값은 `null`입니다. 코어 API는 파일을 쓰거나 `sourceMappingURL` 주석을 추가하지 않으므로 호출자가 소스맵을 저장하고 연결해야 합니다. CLI에는 소스맵 플래그가 없습니다.
 
 ## Vite 플러그인
 

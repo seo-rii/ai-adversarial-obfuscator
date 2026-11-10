@@ -1,6 +1,6 @@
 # Contributing
 
-Contributions that improve correctness, compatibility, documentation, or reproducible evaluation are welcome. This repository is currently private; GitHub issues and pull requests are available to people with repository access.
+Contributions that improve correctness, compatibility, documentation, or reproducible evaluation are welcome. Use GitHub issues and pull requests for proposed improvements, and follow [SECURITY.md](SECURITY.md) for vulnerability reports.
 
 ## Development setup
 

@@ -22,7 +22,7 @@ The marker blocks use `if (false)` and do not execute the operations named by th
 
 Requires **Node.js 22.12 or later**; **Node.js 24 LTS** is recommended for development. The Vite integration targets **Vite 8**; the core API and CLI do not require a Vite application.
 
-Clone the repository with a GitHub account that has access:
+Clone the repository:
 
 ```bash
 git clone https://github.com/seo-rii/ai-adversarial-obfuscator.git
@@ -32,7 +32,7 @@ npm test
 npm run test:types
 ```
 
-The repository is currently private. Its code is MIT licensed, and the package is marked `private` to prevent accidental npm publication. No installation from the public npm registry is assumed here.
+The code is MIT licensed. The package is marked `private` to prevent accidental npm publication; this setting is separate from GitHub repository visibility. No installation from the public npm registry is assumed here.
 
 To use the checkout in another project, install it from its local path:
 
@@ -72,6 +72,8 @@ After installing the local package in another project, invoke the installed CLI 
 
 Without `-o`, a file is written as `input.obfuscated.js`, and a directory is written to a sibling named `<input>-obfuscated`. Directory processing copies only JavaScript files; copy any required non-JavaScript assets separately. The CLI skips `node_modules`, `.git`, and `.vite`, and does not follow input symlinks. Input and output paths must not overlap. Use `--force` to allow replacement of existing output files.
 
+Output/report file symlinks and aliases to input files are rejected, including with `--force`. Report files must be outside the output directory tree. All destinations are checked before any output is written.
+
 CLI reports contain an array of per-file transformation reports. Progress and errors go to stderr so stdout can carry the transformed source.
 
 ## Programmatic API
@@ -95,7 +97,7 @@ console.log(report.beforeBytes, report.afterBytes);
 
 The root export also provides `obfuscateSource(source, options, context)` for a string result, `normalizeOptions(options)`, `createAdversarialBlock(options, context)`, `DEFAULT_TERMS`, and `PRESETS`. Type declarations are included in `src/*.d.mts`.
 
-For a source map, pass `sourceMap: true` to `obfuscateWithReport`. Its result includes `map`, which maps the returned code back to the input, including the offset of any prepended decoy block. Otherwise `map` is `null`. The core API returns the map without writing a file or adding a `sourceMappingURL` comment; the caller handles storage and linking. The CLI has no source-map flag.
+For a source map, pass `sourceMap: true` to `obfuscateWithReport`. Its result includes `map`, which maps the returned code back to the input. Decoy blocks are appended, preserving directive prologues, hashbangs, and the mapped code's positions. Otherwise `map` is `null`. The core API returns the map without writing a file or adding a `sourceMappingURL` comment; the caller handles storage and linking. The CLI has no source-map flag.
 
 ## Vite plugin
 

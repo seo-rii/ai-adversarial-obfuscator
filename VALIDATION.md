@@ -13,7 +13,7 @@ Dependencies were installed with npm 11.19.1 using the committed lockfile:
 
 | Runtime | Runtime tests | Type declarations | Vite fixture build |
 | --- | --- | --- | --- |
-| Node.js 24.22.1 | 29 passed, 0 failed | Passed | Passed |
+| Node.js 24.22.1 | 34 passed, 0 failed | Passed | Passed |
 
 The archive baseline previously passed 11 tests on Node.js 22.12.0 and 24.22.1. The expanded suite is also run on Node.js 22.12.0 and 24 by GitHub Actions.
 
@@ -41,6 +41,8 @@ The new integration checks cover:
 - Maps without minification and `sourcemapExcludeSources: true`, preserving positions while omitting embedded source when requested.
 - Native output settings for custom map filenames and URLs, source path transformation, ignore lists, and debug IDs, with emitted-file metadata and runtime checks.
 - Continued minification of excluded chunks and isolated maps/reports across repeated builds, multiple outputs, and watch rebuilds.
+- Preserved strict-script directives and executable hashbangs across all presets.
+- CLI symlink/hardlink aliases, canonical directory paths, and report/output collisions rejected before writes; legitimate forced writes and stdin reports still work without changing aliased source files.
 
 The fixture uses `minify: true` and `sourcemap: 'hidden'`.
 
@@ -49,6 +51,12 @@ The fixture uses `minify: true` and `sourcemap: 'hidden'`.
 `npm pack --dry-run` verified a nine-file package containing both READMEs, MIT license, metadata, executable CLI, implementation modules, and type declarations. Generated bundles, source ZIPs, dependencies, and local configuration are excluded.
 
 A fresh tarball was also generated with `npm pack` and installed into a separate temporary consumer with Vite 8.3.6 on Node.js 24.22.1. The checks imported both package entry points, executed a transformed ESM module with a core source map, built and ran a Vite library with minification and an emitted map, and invoked the installed CLI help command. All passed. This was a local package test; the package has not been published to npm.
+
+## Publication review
+
+The publication review on 2026-11-10 covered all Git history, tracked source and documentation, package contents, and retained GitHub Actions logs. Gitleaks 8.30.1 and targeted checks found no credentials, private keys, or machine-specific user paths in the reviewed Git contents. Release assets and uploaded workflow artifacts were absent.
+
+The review found and fixed strict-mode/hashbang preservation and CLI alias/report overwrite defects. Compatible dependency remediation removed the vulnerable transitive chain; `npm audit` reports zero known vulnerabilities for the locked tree. The MIT license and contribution/security guidance are included; generated archives, local audit artifacts, and workspace bookkeeping remain outside Git.
 
 ## Limits
 

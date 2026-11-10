@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { SourceMap } from 'node:module';
 import { obfuscateSource, obfuscateWithReport, normalizeOptions } from '../src/core.mjs';
 
 async function importSource(source) {
@@ -44,6 +45,34 @@ test('deterministic seed produces stable output', () => {
     const y = obfuscateSource(sample, { seed: 42 });
     assert.equal(x, y);
     assert.notEqual(x, obfuscateSource(sample, { seed: 43 }));
+});
+
+test('source maps locate original errors with and without prepended adversarial markers', async () => {
+    const original = 'export function explode() {\n    throw new Error("mapped-core-error");\n}\n';
+    for (const adversarial of [true, false]) {
+        const { code, map } = obfuscateWithReport(original, {
+            preset: 'light', seed: 10, adversarial, sourceMap: true
+        }, { fileName: 'original.mjs' });
+        assert.equal(map.version, 3);
+        assert.deepEqual(map.sources, ['original.mjs']);
+        assert.deepEqual(map.sourcesContent, [original]);
+        assert.doesNotMatch(code, /sourceMappingURL/);
+        const transformed = await importSource(code);
+        let failure;
+        try {
+            transformed.explode();
+        } catch (error) {
+            failure = error;
+        }
+        assert.equal(failure.message, 'mapped-core-error');
+        const frame = failure.stack.split('\n')[1].match(/:(\d+):(\d+)\)$/);
+        assert.ok(frame, failure.stack);
+        const entry = new SourceMap(map).findEntry(Number(frame[1]) - 1, Number(frame[2]) - 1);
+        assert.equal(entry.originalSource, 'original.mjs');
+        assert.equal(entry.originalLine, 1);
+    }
+    assert.equal(obfuscateWithReport(original).map, null);
+    assert.throws(() => normalizeOptions({ sourceMap: 'inline' }), /sourceMap must be a boolean/);
 });
 
 test('standard-only mode omits adversarial material', async () => {

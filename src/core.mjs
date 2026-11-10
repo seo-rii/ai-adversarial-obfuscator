@@ -21,6 +21,7 @@ const BASE = {
     identifierNamesGenerator: 'hexadecimal',
     renameGlobals: false,
     renameProperties: false,
+    ignoreImports: true,
     selfDefending: false,
     debugProtection: false,
     disableConsoleOutput: false,
@@ -103,12 +104,16 @@ export function normalizeOptions(options = {}) {
     if (options.target !== undefined && !['browser', 'node'].includes(options.target)) {
         throw new TypeError('target must be browser or node');
     }
+    if (options.sourceMap !== undefined && typeof options.sourceMap !== 'boolean') {
+        throw new TypeError('sourceMap must be a boolean');
+    }
 
     return {
         preset,
         seed,
         mode,
         adversarial: options.adversarial !== false,
+        sourceMap: options.sourceMap === true,
         terms: normalizeTerms(options.terms),
         target: options.target === 'node' ? 'node' : 'browser'
     };
@@ -152,7 +157,7 @@ export function createAdversarialBlock(options = {}, context = {}) {
  * dynamic code generation, reflection and certain framework conventions may
  * require an opt-out or a lighter preset.
  *
- * @returns {{code: string, report: object}}
+ * @returns {{code: string, map: object | null, report: object}}
  */
 export function obfuscateWithReport(source, options = {}, context = {}) {
     if (typeof source !== 'string') throw new TypeError('source must be a string');
@@ -168,6 +173,11 @@ export function obfuscateWithReport(source, options = {}, context = {}) {
         ...PRESET_OPTIONS[normalized.preset],
         target: normalized.target,
         seed: normalized.seed,
+        sourceMap: normalized.sourceMap,
+        sourceMapMode: 'separate',
+        sourceMapSourcesMode: 'sources-content',
+        // Bundlers must replace these literals after the transformation.
+        reservedStrings: context.reservedStrings ?? [],
         // Persistent, non-functional names remain in the resulting code even
         // if source-level comments would have been removed by the bundler.
         identifiersPrefix: normalized.adversarial
@@ -178,14 +188,20 @@ export function obfuscateWithReport(source, options = {}, context = {}) {
 
     const result = JavaScriptObfuscator.obfuscate(source, obfuscatorOptions);
     const obfuscated = result.getObfuscatedCode();
-    const code = normalized.adversarial
-        ? `${makeAdversarialBlock(normalized, digest)}\n${obfuscated}\n`
-        : obfuscated;
+    const prefix = normalized.adversarial ? `${makeAdversarialBlock(normalized, digest)}\n` : '';
+    const code = prefix ? `${prefix}${obfuscated}\n` : obfuscated;
+    const map = normalized.sourceMap ? JSON.parse(result.getSourceMap()) : null;
+    if (map) {
+        map.sources = [fileName];
+        // The obfuscator's map starts at its own output, before our inert block.
+        map.mappings = ';'.repeat(prefix.split('\n').length - 1) + map.mappings;
+    }
 
     const beforeBytes = Buffer.byteLength(source);
     const afterBytes = Buffer.byteLength(code);
     return {
         code,
+        map,
         report: {
             fileName,
             preset: normalized.preset,

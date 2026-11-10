@@ -4,7 +4,8 @@ import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { readFile, writeFile, mkdir, readdir, lstat, realpath, rename, rm } from 'node:fs/promises';
-import { obfuscateWithReport, PRESETS } from '../src/core.mjs';
+import { minimatch } from 'minimatch';
+import { obfuscateWithReport, normalizeOptions, PRESETS } from '../src/core.mjs';
 
 const HELP = `ai-obfuscate — JavaScript obfuscator with optional LLM-analysis decoys
 
@@ -23,12 +24,17 @@ Options:
   --no-adversarial           Standard JS obfuscation only
   --sourcemap false|true|inline|hidden  Default: false
   --sourcemap-file PATH      Separate map path for one file or stdin
+  --config PATH              Read explicit JSON configuration
+  --include GLOB             Select input-relative files (repeatable)
+  --exclude GLOB             Exclude input-relative files (repeatable)
+  --dry-run                  Print the validated write plan without transforming
+  --check                    Validate transformations without writing files
   --report PATH              Write JSON report (no LLM evaluation)
   --force                    Overwrite existing output files
   -h, --help                 Display this help
 `;
 
-function parseCli(argv) {
+async function parseCli(argv) {
     const { values, positionals } = parseArgs({
         args: argv,
         allowPositionals: true,
@@ -43,42 +49,109 @@ function parseCli(argv) {
             'no-adversarial': { type: 'boolean' },
             sourcemap: { type: 'string' },
             'sourcemap-file': { type: 'string' },
+            config: { type: 'string' },
+            include: { type: 'string', multiple: true },
+            exclude: { type: 'string', multiple: true },
+            'dry-run': { type: 'boolean' },
+            check: { type: 'boolean' },
             report: { type: 'string' },
             force: { type: 'boolean' },
             help: { type: 'boolean', short: 'h' }
         }
     });
     if (values.help) return { help: true };
-    if (positionals.length !== 1) throw new Error('Specify exactly one input path (or - for stdin).');
+    if (positionals.length > 1) throw new Error('Specify exactly one input path (or - for stdin).');
+    if (values['dry-run'] && values.check) throw new Error('dry-run and check are mutually exclusive');
+    let config = {};
+    let configuration = null;
+    if (values.config !== undefined) {
+        const path = resolve(values.config);
+        try {
+            config = JSON.parse(await readFile(path, 'utf8'));
+        } catch (error) {
+            throw new Error(`Cannot read JSON configuration: ${error.message}`);
+        }
+        validateConfig(config);
+        const canonical = await realpath(path);
+        configuration = { path: canonical, identity: identity(await lstat(canonical)) };
+        for (const key of ['input', 'output', 'report', 'sourcemapFile']) {
+            if (config[key] !== undefined && !(['input', 'output'].includes(key) && config[key] === '-')) {
+                config[key] = resolve(dirname(path), config[key]);
+            }
+        }
+    }
+    const input = positionals[0] ?? config.input;
+    if (input === undefined) throw new Error('Specify exactly one input path (or - for stdin).');
     if (values.preset && !PRESETS.includes(values.preset)) throw new Error(`Unknown preset: ${values.preset}`);
     if (values.target && !['browser', 'node'].includes(values.target)) throw new Error('Unknown target');
-    const sourcemap = values.sourcemap ?? 'false';
+    const sourcemap = String(values.sourcemap ?? config.sourcemap ?? 'false');
     if (!['false', 'true', 'inline', 'hidden'].includes(sourcemap)) {
         throw new Error('sourcemap must be false, true, inline, or hidden');
     }
-    if (values['sourcemap-file'] !== undefined &&
-        (!values['sourcemap-file'] || !['true', 'hidden'].includes(sourcemap))) {
+    const sourcemapFile = values['sourcemap-file'] ?? config.sourcemapFile;
+    if (sourcemapFile !== undefined &&
+        (!sourcemapFile || !['true', 'hidden'].includes(sourcemap))) {
         throw new Error('sourcemap-file requires sourcemap=true or sourcemap=hidden');
     }
 
-    const options = {
-        preset: values.preset,
-        seed: values.seed === undefined ? undefined : Number(values.seed),
-        adversarial: !values['no-adversarial'],
+    const options = normalizeOptions({
+        preset: values.preset ?? config.preset,
+        seed: values.seed === undefined ? config.seed : Number(values.seed),
+        adversarial: values['no-adversarial'] ? false : config.adversarial,
         sourceMap: sourcemap !== 'false',
-        mode: values.mode,
-        target: values.target,
-        terms: values.terms === undefined ? undefined : values.terms.split(',').map(x => x.trim())
-    };
+        mode: values.mode ?? config.mode,
+        target: values.target ?? config.target,
+        terms: values.terms === undefined ? config.terms : values.terms.split(',').map(x => x.trim())
+    });
+    const include = values.include ?? config.include;
+    const exclude = values.exclude ?? config.exclude;
+    validateGlobs(include, 'include');
+    validateGlobs(exclude, 'exclude');
     return {
-        input: positionals[0],
-        output: values.output,
-        report: values.report,
+        input,
+        output: values.output ?? config.output,
+        report: values.report ?? config.report,
         force: !!values.force,
         sourcemap,
-        sourcemapFile: values['sourcemap-file'],
+        sourcemapFile,
+        include: typeof include === 'string' ? [include] : include,
+        exclude: typeof exclude === 'string' ? [exclude] : exclude,
+        planMode: values['dry-run'] ? 'dry-run' : values.check ? 'check' : null,
+        configuration,
         options
     };
+}
+
+function validateGlobs(value, name) {
+    if (value === undefined) return;
+    const patterns = typeof value === 'string' ? [value] : value;
+    if (!Array.isArray(patterns) || patterns.some(pattern => typeof pattern !== 'string' || !pattern || pattern.includes('\0'))) {
+        throw new TypeError(`${name} must be a glob string or an array of glob strings`);
+    }
+}
+
+function validateConfig(config) {
+    if (!config || typeof config !== 'object' || Array.isArray(config)) throw new TypeError('Configuration must be a JSON object');
+    const coreKeys = ['preset', 'seed', 'mode', 'terms', 'target', 'adversarial'];
+    const pathKeys = ['input', 'output', 'report', 'sourcemapFile'];
+    const allowed = new Set([...coreKeys, ...pathKeys, 'sourcemap', 'include', 'exclude']);
+    for (const [key, value] of Object.entries(config)) {
+        if (!allowed.has(key)) throw new TypeError(`Unknown configuration option: ${key}`);
+        if (pathKeys.includes(key) && (typeof value !== 'string' || !value || value.includes('\0'))) {
+            throw new TypeError(`Configuration ${key} must be a nonempty path string`);
+        }
+        if (['preset', 'mode', 'target'].includes(key) && typeof value !== 'string') {
+            throw new TypeError(`Configuration ${key} must be a string`);
+        }
+        if (key === 'seed' && typeof value !== 'number') throw new TypeError('Configuration seed must be a number');
+        if (key === 'adversarial' && typeof value !== 'boolean') throw new TypeError('Configuration adversarial must be a boolean');
+        if (key === 'sourcemap' && ![false, true, 'false', 'true', 'inline', 'hidden'].includes(value)) {
+            throw new TypeError('Configuration sourcemap must be false, true, inline, or hidden');
+        }
+    }
+    validateGlobs(config.include, 'include');
+    validateGlobs(config.exclude, 'exclude');
+    normalizeOptions(Object.fromEntries(coreKeys.filter(key => Object.hasOwn(config, key)).map(key => [key, config[key]])));
 }
 
 async function readStdin() {
@@ -147,13 +220,16 @@ async function prepareDestination(path, force) {
     return { path: await canonicalPath(path), identity: existing ? identity(existing) : null };
 }
 
-function validateDestinations(writes) {
+function validateDestinations(writes, configuration) {
     const paths = new Set(writes.map(item => item.path));
     if (paths.size !== writes.length) {
         throw new Error('Output, source-map, and report paths must not overlap or alias each other.');
     }
     const identities = new Set();
     for (const item of writes) {
+        if (configuration && (item.path === configuration.path || item.identity === configuration.identity)) {
+            throw new Error('Output/report/map paths must not replace the configuration file.');
+        }
         if (item.identity && identities.has(item.identity)) {
             throw new Error('Output, source-map, and report paths must not overlap or alias each other.');
         }
@@ -208,21 +284,23 @@ function isInside(parent, child) {
 }
 
 async function run() {
-    const parsed = parseCli(process.argv.slice(2));
+    const parsed = await parseCli(process.argv.slice(2));
     if (parsed.help) {
         process.stdout.write(HELP);
         return;
     }
-    const { input, options, report, force, sourcemap, sourcemapFile } = parsed;
+    const { input, options, report, force, sourcemap, sourcemapFile, include, exclude, planMode, configuration } = parsed;
 
     if (input === '-') {
+        if (planMode) throw new Error('dry-run and check require file or directory input; stdin is not supported');
+        if (include !== undefined || exclude !== undefined) throw new Error('Input globs require file or directory input');
         if (parsed.output && parsed.output !== '-') throw new Error('For stdin, use -o - or omit -o');
         if (['true', 'hidden'].includes(sourcemap) && !sourcemapFile) {
             throw new Error('For stdin with an external source map, specify --sourcemap-file');
         }
         const mapWrite = sourcemapFile ? await prepareDestination(resolve(sourcemapFile), force) : null;
         const reportWrite = report ? await prepareDestination(resolve(report), force) : null;
-        validateDestinations([mapWrite, reportWrite].filter(Boolean));
+        validateDestinations([mapWrite, reportWrite].filter(Boolean), configuration);
         const result = obfuscateWithReport(await readStdin(), options, { fileName: 'stdin.js' });
         const generated = sourceMapOutput(result, sourcemap, null, null, mapWrite?.path);
         if (mapWrite) await writeSafe(mapWrite.path, generated.map, force);
@@ -254,8 +332,13 @@ async function run() {
         }
     }
 
-    const inputs = directory ? [...(await Array.fromAsync(walk(inputPath)))] : [inputPath];
-    const inputIdentities = new Set((await Promise.all(inputs.map(file => lstat(file)))).map(identity));
+    const discovered = directory ? [...(await Array.fromAsync(walk(inputPath)))] : [inputPath];
+    const inputs = discovered.filter(file => {
+        const name = (directory ? relative(inputPath, file) : basename(file)).split(sep).join('/');
+        const matches = pattern => minimatch(name, pattern, { dot: true });
+        return (include === undefined || include.some(matches)) && !(exclude ?? []).some(matches);
+    });
+    const inputIdentities = new Set((await Promise.all(discovered.map(file => lstat(file)))).map(identity));
     async function prepareWrite(path) {
         const destination = await prepareDestination(path, force);
         if (isInside(inputPath, destination.path) ||
@@ -279,7 +362,24 @@ async function run() {
     }
     const reportWrite = report ? await prepareWrite(resolve(report)) : null;
     if (reportWrite) destinations.push(reportWrite);
-    validateDestinations(destinations);
+    validateDestinations(destinations, configuration);
+    if (planMode) {
+        if (planMode === 'check') {
+            for (const { file } of writes) {
+                obfuscateWithReport(await readFile(file, 'utf8'), options, {
+                    fileName: relative(inputPath, file) || file
+                });
+            }
+        }
+        process.stdout.write(JSON.stringify({
+            mode: planMode,
+            files: writes.map(({ file, path, mapWrite }) => ({
+                input: file, output: path, ...(mapWrite ? { sourcemapFile: mapWrite.path } : {})
+            })),
+            report: reportWrite?.path ?? null
+        }, null, 2) + '\n');
+        return;
+    }
     const reports = [];
     for (const { file, path, mapWrite } of writes) {
         const original = await readFile(file, 'utf8');

@@ -47,13 +47,14 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:types": "tsc -p test/tsconfig.json",
-    "test:unit": "node --test test/core.test.mjs test/cli.test.mjs",
-    "test:vite": "node --test test/vite.test.mjs",
+    "test:unit": "node --test test/core.test.mjs test/cli*.test.mjs",
+    "test:vite": "node --test test/vite*.test.mjs",
     "build:fixture": "vite build --config fixtures/vite/vite.config.mjs",
     "test:browser": "node --test test/browser/*.test.mjs"
   },
   "dependencies": {
-    "javascript-obfuscator": "^5.10.0"
+    "javascript-obfuscator": "^5.10.0",
+    "minimatch": "^11.0.5"
   },
   "peerDependencies": {
     "vite": "^8.0.0"

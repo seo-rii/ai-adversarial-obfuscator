@@ -1,10 +1,18 @@
+import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+import { promisify } from 'node:util';
+import { gzip, brotliCompress } from 'node:zlib';
 import { minify as minifyWithOxc } from 'vite';
 import { createAdversarialBlock, obfuscateWithReport, normalizeOptions } from './core.mjs';
 
+const gzipAsync = promisify(gzip);
+const brotliAsync = promisify(brotliCompress);
+
 /** Post-minify chunk obfuscation for Vite 8, with composed source maps. */
 export function aiAdversarialObfuscator(options = {}) {
-    const { include, exclude, chunkOptions, reportFile = 'ai-obfuscation-report.json', ...coreOptions } = options;
+    const { include, exclude, chunkOptions, budgets = {}, reportFile = 'ai-obfuscation-report.json', ...coreOptions } = options;
     const normalized = normalizeOptions(coreOptions);
+    validateBudgets(budgets);
     if (chunkOptions !== undefined && typeof chunkOptions !== 'function') {
         throw new TypeError('chunkOptions must be a function');
     }
@@ -29,7 +37,8 @@ export function aiAdversarialObfuscator(options = {}) {
                 const nativeMinify = output.minify && output.minify !== 'dce-only' ? output.minify : false;
                 if (nativeMinify) output.minify = false;
                 // Per-output state also prevents report accumulation on rebuilds.
-                const reports = [];
+                const reports = new Map();
+                const baselines = new Map();
                 const policies = new Map();
                 function policyFor(chunk) {
                     const fileName = chunk.fileName || `${chunk.name}.js`;
@@ -84,16 +93,19 @@ export function aiAdversarialObfuscator(options = {}) {
                     name: 'ai-adversarial-obfuscator:output',
                     renderStart() {
                         // Watch mode reuses output plugins without outputOptions.
-                        reports.length = 0;
+                        reports.clear();
+                        baselines.clear();
                         policies.clear();
                     },
                     renderChunk: {
                         order: 'post',
                         async handler(source, chunk, outputOptions) {
                             // Exclude skips obfuscation, not the preceding minifier.
+                            baselines.set(chunk.fileName, Buffer.byteLength(source));
                             try {
                                 const policy = policyFor(chunk);
                                 if (!policy) return null;
+                                const started = performance.now();
                                 const { code, map, report } = obfuscateWithReport(source, {
                                     ...policy,
                                     sourceMap: !!outputOptions.sourcemap
@@ -103,7 +115,11 @@ export function aiAdversarialObfuscator(options = {}) {
                                     // preload markers until their later substitutions.
                                     reservedStrings: ['!~\\{[^}]+\\}~', '__VITE_']
                                 });
-                                reports.push({ chunk: chunk.name, ...report });
+                                reports.set(chunk.fileName, {
+                                    chunk: chunk.name,
+                                    ...report,
+                                    transformMs: Number((performance.now() - started).toFixed(3))
+                                });
                                 return { code, map };
                             } catch (error) {
                                 throw new Error(`[ai-adversarial-obfuscator] Failed to transform ${chunk.fileName}: ${error.message}`, {
@@ -113,21 +129,61 @@ export function aiAdversarialObfuscator(options = {}) {
                         }
                     },
 
-                    generateBundle() {
-                        if (reportFile === false) return;
-                        if (typeof reportFile !== 'string' || !/^[-\w./]+\.json$/.test(reportFile) ||
-                            reportFile.startsWith('/') || reportFile.split('/').some(x => x === '.' || x === '..' || x === '')) {
-                            throw new Error('[ai-adversarial-obfuscator] reportFile must be a relative .json path or false');
+                    generateBundle: {
+                        order: 'post',
+                        async handler(_outputOptions, bundle) {
+                            if (reportFile === false && Object.keys(budgets).length === 0) return;
+                            const files = [];
+                            const chunks = [];
+                            for (const chunk of Object.values(bundle).filter(item => item.type === 'chunk')
+                                .sort((a, b) => a.fileName.localeCompare(b.fileName))) {
+                                const preliminary = chunk.preliminaryFileName ?? chunk.fileName;
+                                const transformed = reports.get(preliminary);
+                                const emitted = await measureChunk(chunk, bundle);
+                                files.push({ ...emitted, obfuscated: !!transformed });
+                                if (transformed) chunks.push({ ...transformed, emitted });
+                            }
+                            const beforeBytes = [...baselines.values()].reduce((sum, bytes) => sum + bytes, 0);
+                            const totals = {
+                                bytes: files.reduce((sum, item) => sum + item.bytes, 0),
+                                gzipBytes: files.reduce((sum, item) => sum + item.gzipBytes, 0),
+                                brotliBytes: files.reduce((sum, item) => sum + item.brotliBytes, 0),
+                                mapBytes: files.reduce((sum, item) => sum + item.mapBytes, 0),
+                                beforeBytes,
+                                growthRatio: beforeBytes === 0 ? null : files.reduce((sum, item) => sum + item.bytes, 0) / beforeBytes,
+                                transformMs: Number(chunks.reduce((sum, item) => sum + item.transformMs, 0).toFixed(3))
+                            };
+                            const budgetViolations = Object.entries({
+                                maxBytes: 'bytes', maxGzipBytes: 'gzipBytes',
+                                maxBrotliBytes: 'brotliBytes', maxGrowthRatio: 'growthRatio'
+                            }).flatMap(([limitName, metric]) => budgets[limitName] !== undefined &&
+                                totals[metric] !== null && totals[metric] > budgets[limitName]
+                                ? [{ metric, actual: totals[metric], limit: budgets[limitName] }] : []);
+                            if (budgetViolations.length) {
+                                const message = '[ai-adversarial-obfuscator] Output budget exceeded: ' + budgetViolations
+                                    .map(item => `${item.metric} ${item.actual} > ${item.limit}`).join(', ');
+                                if (budgets.onExceeded === 'warn') this.warn(message);
+                                else this.error(message);
+                            }
+                            if (reportFile === false) return;
+                            if (typeof reportFile !== 'string' || !/^[-\w./]+\.json$/.test(reportFile) ||
+                                reportFile.startsWith('/') || reportFile.split('/').some(x => x === '.' || x === '..' || x === '')) {
+                                throw new Error('[ai-adversarial-obfuscator] reportFile must be a relative .json path or false');
+                            }
+                            this.emitFile({
+                                type: 'asset',
+                                fileName: reportFile,
+                                source: JSON.stringify({
+                                    schemaVersion: 2,
+                                    plugin: 'ai-adversarial-obfuscator',
+                                    note: 'No LLM attack-success-rate (ASR) measurement has been performed.',
+                                    chunks,
+                                    files,
+                                    totals,
+                                    budgetViolations
+                                }, null, 2)
+                            });
                         }
-                        this.emitFile({
-                            type: 'asset',
-                            fileName: reportFile,
-                            source: JSON.stringify({
-                                plugin: 'ai-adversarial-obfuscator',
-                                note: 'No LLM attack-success-rate (ASR) measurement has been performed.',
-                                chunks: reports
-                            }, null, 2)
-                        });
                     }
                 }];
 
@@ -157,6 +213,37 @@ export function aiAdversarialObfuscator(options = {}) {
                 return output;
             }
         }
+    };
+}
+
+function validateBudgets(budgets) {
+    if (!budgets || typeof budgets !== 'object' || Array.isArray(budgets)) {
+        throw new TypeError('budgets must be an object');
+    }
+    const sizes = ['maxBytes', 'maxGzipBytes', 'maxBrotliBytes'];
+    for (const [key, value] of Object.entries(budgets)) {
+        if (sizes.includes(key) && Number.isSafeInteger(value) && value >= 0) continue;
+        if (key === 'maxGrowthRatio' && Number.isFinite(value) && value > 0) continue;
+        if (key === 'onExceeded' && ['error', 'warn'].includes(value)) continue;
+        throw new TypeError(`invalid budget option: ${key}`);
+    }
+}
+
+async function measureChunk(chunk, bundle) {
+    const bytes = Buffer.from(chunk.code);
+    const [gzipped, brotli] = await Promise.all([gzipAsync(bytes), brotliAsync(bytes)]);
+    const mapAsset = bundle[chunk.sourcemapFileName ?? `${chunk.fileName}.map`];
+    const inline = chunk.code.match(/sourceMappingURL=data:application\/json[^,]*;base64,([^\s]+)/);
+    const mapBytes = mapAsset?.type === 'asset'
+        ? Buffer.byteLength(mapAsset.source)
+        : inline ? Buffer.from(inline[1], 'base64').byteLength : 0;
+    return {
+        fileName: chunk.fileName,
+        bytes: bytes.length,
+        gzipBytes: gzipped.length,
+        brotliBytes: brotli.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        mapBytes
     };
 }
 

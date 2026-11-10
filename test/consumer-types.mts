@@ -23,6 +23,7 @@ const plugin = aiAdversarialObfuscator({
     exclude: [/vendor/, name => name.endsWith('.cjs')],
     chunkOptions: chunk => chunk.moduleIds.some(id => id.includes('/vendor/'))
         ? false : { preset: chunk.isEntry ? 'light' : 'strong' },
+    budgets: { maxGzipBytes: 100_000, maxGrowthRatio: 20, onExceeded: 'error' },
     reportFile: false
 });
 

@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SourceMap } from 'node:module';
+import { runInNewContext } from 'node:vm';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { obfuscateSource, obfuscateWithReport, normalizeOptions } from '../src/core.mjs';
 
 async function importSource(source) {
@@ -47,7 +52,42 @@ test('deterministic seed produces stable output', () => {
     assert.notEqual(x, obfuscateSource(sample, { seed: 43 }));
 });
 
-test('source maps locate original errors with and without prepended adversarial markers', async () => {
+test('adversarial markers preserve strict script directives', () => {
+    const original = `"use strict";
+        globalThis.strictThis = (function () { return this; })() === undefined;
+        try { accidentalGlobal = 1; }
+        catch (error) { globalThis.assignmentError = error.name; }
+    `;
+    for (const preset of ['light', 'balanced', 'strong']) {
+        const code = obfuscateSource(original, { preset, seed: 5, target: 'node' });
+        const context = {};
+        runInNewContext(code, context);
+        assert.equal(context.strictThis, true, preset);
+        assert.equal(context.assignmentError, 'ReferenceError', preset);
+        assert.equal(context.accidentalGlobal, undefined, preset);
+        assert.match(code, /AI_ANALYSIS_DECOY/);
+    }
+});
+
+test('adversarial output keeps hashbang scripts executable by Node', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'aiob-core-hashbang-'));
+    try {
+        const original = '#!/usr/bin/env node\n"use strict";\nconsole.log((function () { return this; })() === undefined ? "strict" : "loose");';
+        for (const preset of ['light', 'balanced', 'strong']) {
+            const code = obfuscateSource(original, { preset, seed: 5, target: 'node' });
+            assert.ok(code.startsWith('#!/usr/bin/env node\n'), preset);
+            const output = join(root, `${preset}.cjs`);
+            await writeFile(output, code);
+            const result = spawnSync(process.execPath, [output], { encoding: 'utf8', timeout: 5000 });
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stdout.trim(), 'strict', preset);
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('source maps locate original errors with and without appended adversarial markers', async () => {
     const original = 'export function explode() {\n    throw new Error("mapped-core-error");\n}\n';
     for (const adversarial of [true, false]) {
         const { code, map } = obfuscateWithReport(original, {

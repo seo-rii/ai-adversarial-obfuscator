@@ -188,14 +188,12 @@ export function obfuscateWithReport(source, options = {}, context = {}) {
 
     const result = JavaScriptObfuscator.obfuscate(source, obfuscatorOptions);
     const obfuscated = result.getObfuscatedCode();
-    const prefix = normalized.adversarial ? `${makeAdversarialBlock(normalized, digest)}\n` : '';
-    const code = prefix ? `${prefix}${obfuscated}\n` : obfuscated;
+    // Keep hashbangs and directive prologues at the start of the program.
+    const code = normalized.adversarial
+        ? `${obfuscated}\n${makeAdversarialBlock(normalized, digest)}`
+        : obfuscated;
     const map = normalized.sourceMap ? JSON.parse(result.getSourceMap()) : null;
-    if (map) {
-        map.sources = [fileName];
-        // The obfuscator's map starts at its own output, before our inert block.
-        map.mappings = ';'.repeat(prefix.split('\n').length - 1) + map.mappings;
-    }
+    if (map) map.sources = [fileName];
 
     const beforeBytes = Buffer.byteLength(source);
     const afterBytes = Buffer.byteLength(code);

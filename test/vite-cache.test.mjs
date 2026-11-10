@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { build } from 'vite';
@@ -235,7 +235,7 @@ test('Vite watch rebuilds reuse unchanged chunks and transform changed entries',
                     else resolveBuild();
                 }
                 function onEvent(event) {
-                    if (event.code === 'BUNDLE_END') finish();
+                    if (event.code === 'END') finish();
                     else if (event.code === 'ERROR') finish(event.error);
                 }
                 watcher.on('event', onEvent);
@@ -246,7 +246,12 @@ test('Vite watch rebuilds reuse unchanged chunks and transform changed entries',
         const initial = JSON.parse(await readFile(join(output, reportName), 'utf8'));
         assert.equal(initial.cache.misses, 2);
         const betaBefore = await readFile(join(output, 'beta.mjs'), 'utf8');
-        await nextBuild(() => writeFile(alpha, 'export const value = 3;\n'));
+        await nextBuild(async () => {
+            // Publish a complete source update, rather than letting the watcher
+            // observe a transiently truncated file under concurrent test load.
+            await writeFile(`${alpha}.next`, 'export const value = 3;\n');
+            await rename(`${alpha}.next`, alpha);
+        });
         const rebuilt = JSON.parse(await readFile(join(output, reportName), 'utf8'));
         assert.equal(rebuilt.cache.hits, 1);
         assert.equal(rebuilt.cache.misses, 1);

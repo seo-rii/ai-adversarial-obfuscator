@@ -21,6 +21,8 @@ const actualSeed: number = normalizeOptions(options).seed;
 const plugin = aiAdversarialObfuscator({
     ...options,
     exclude: [/vendor/, name => name.endsWith('.cjs')],
+    chunkOptions: chunk => chunk.moduleIds.some(id => id.includes('/vendor/'))
+        ? false : { preset: chunk.isEntry ? 'light' : 'strong' },
     reportFile: false
 });
 

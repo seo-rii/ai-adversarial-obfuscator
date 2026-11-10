@@ -21,6 +21,8 @@ Options:
   --terms WORD,WORD          Decoy subject labels; valid JS names generated
   --target browser|node      Runtime target (default: browser)
   --no-adversarial           Standard JS obfuscation only
+  --sourcemap false|true|inline|hidden  Default: false
+  --sourcemap-file PATH      Separate map path for one file or stdin
   --report PATH              Write JSON report (no LLM evaluation)
   --force                    Overwrite existing output files
   -h, --help                 Display this help
@@ -39,6 +41,8 @@ function parseCli(argv) {
             terms: { type: 'string' },
             target: { type: 'string' },
             'no-adversarial': { type: 'boolean' },
+            sourcemap: { type: 'string' },
+            'sourcemap-file': { type: 'string' },
             report: { type: 'string' },
             force: { type: 'boolean' },
             help: { type: 'boolean', short: 'h' }
@@ -48,11 +52,20 @@ function parseCli(argv) {
     if (positionals.length !== 1) throw new Error('Specify exactly one input path (or - for stdin).');
     if (values.preset && !PRESETS.includes(values.preset)) throw new Error(`Unknown preset: ${values.preset}`);
     if (values.target && !['browser', 'node'].includes(values.target)) throw new Error('Unknown target');
+    const sourcemap = values.sourcemap ?? 'false';
+    if (!['false', 'true', 'inline', 'hidden'].includes(sourcemap)) {
+        throw new Error('sourcemap must be false, true, inline, or hidden');
+    }
+    if (values['sourcemap-file'] !== undefined &&
+        (!values['sourcemap-file'] || !['true', 'hidden'].includes(sourcemap))) {
+        throw new Error('sourcemap-file requires sourcemap=true or sourcemap=hidden');
+    }
 
     const options = {
         preset: values.preset,
         seed: values.seed === undefined ? undefined : Number(values.seed),
         adversarial: !values['no-adversarial'],
+        sourceMap: sourcemap !== 'false',
         mode: values.mode,
         target: values.target,
         terms: values.terms === undefined ? undefined : values.terms.split(',').map(x => x.trim())
@@ -62,6 +75,8 @@ function parseCli(argv) {
         output: values.output,
         report: values.report,
         force: !!values.force,
+        sourcemap,
+        sourcemapFile: values['sourcemap-file'],
         options
     };
 }
@@ -88,7 +103,11 @@ async function canonicalPath(path) {
     const suffix = [];
     for (;;) {
         try {
-            return join(await realpath(ancestor), ...suffix);
+            const canonical = await realpath(ancestor);
+            if (suffix.length && !(await lstat(canonical)).isDirectory()) {
+                throw new Error('Output/report/map parent paths must be directories.');
+            }
+            return join(canonical, ...suffix);
         } catch (error) {
             if (error.code !== 'ENOENT' || dirname(ancestor) === ancestor) throw error;
             suffix.unshift(basename(ancestor));
@@ -118,6 +137,56 @@ async function writeSafe(path, content, force) {
     }
 }
 
+const identity = item => `${item.dev}:${item.ino}`;
+
+async function prepareDestination(path, force) {
+    const existing = await existingStats(path);
+    if (existing?.isSymbolicLink()) throw new Error('Symbolic link output/report/map files are not supported.');
+    if (existing && !existing.isFile()) throw new Error('Output/report/map destinations must be regular files.');
+    if (existing && !force) throw new Error(`EEXIST: output/report/map already exists: ${path}`);
+    return { path: await canonicalPath(path), identity: existing ? identity(existing) : null };
+}
+
+function validateDestinations(writes) {
+    const paths = new Set(writes.map(item => item.path));
+    if (paths.size !== writes.length) {
+        throw new Error('Output, source-map, and report paths must not overlap or alias each other.');
+    }
+    const identities = new Set();
+    for (const item of writes) {
+        if (item.identity && identities.has(item.identity)) {
+            throw new Error('Output, source-map, and report paths must not overlap or alias each other.');
+        }
+        if (item.identity) identities.add(item.identity);
+        for (let parent = dirname(item.path); ; parent = dirname(parent)) {
+            if (paths.has(parent)) {
+                throw new Error('Output, source-map, and report paths must not overlap or alias each other.');
+            }
+            if (dirname(parent) === parent) break;
+        }
+    }
+}
+
+function sourceMapOutput(result, mode, input, output, mapPath) {
+    if (!result.map) return { code: result.code, map: null };
+    const map = { ...result.map };
+    if (output) map.file = basename(output);
+    if (input) {
+        const base = mode === 'inline' ? dirname(output) : dirname(mapPath);
+        map.sources = [relative(base, input).split(sep).join('/')];
+    }
+    const contents = JSON.stringify(map);
+    let code = result.code;
+    if (mode === 'inline') {
+        code += `\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,${Buffer.from(contents).toString('base64')}\n`;
+    } else if (mode === 'true') {
+        const link = relative(output ? dirname(output) : process.cwd(), mapPath)
+            .split(sep).map(encodeURIComponent).join('/');
+        code += `\n//# sourceMappingURL=${link}\n`;
+    }
+    return { code, map: contents };
+}
+
 async function* walk(dir) {
     for (const item of await readdir(dir, { withFileTypes: true })) {
         if (['node_modules', '.git', '.vite'].includes(item.name)) continue;
@@ -144,13 +213,21 @@ async function run() {
         process.stdout.write(HELP);
         return;
     }
-    const { input, options, report, force } = parsed;
+    const { input, options, report, force, sourcemap, sourcemapFile } = parsed;
 
     if (input === '-') {
         if (parsed.output && parsed.output !== '-') throw new Error('For stdin, use -o - or omit -o');
-        const { code, report: item } = obfuscateWithReport(await readStdin(), options, { fileName: 'stdin.js' });
-        process.stdout.write(code);
-        if (report) await writeSafe(resolve(report), JSON.stringify([item], null, 2), force);
+        if (['true', 'hidden'].includes(sourcemap) && !sourcemapFile) {
+            throw new Error('For stdin with an external source map, specify --sourcemap-file');
+        }
+        const mapWrite = sourcemapFile ? await prepareDestination(resolve(sourcemapFile), force) : null;
+        const reportWrite = report ? await prepareDestination(resolve(report), force) : null;
+        validateDestinations([mapWrite, reportWrite].filter(Boolean));
+        const result = obfuscateWithReport(await readStdin(), options, { fileName: 'stdin.js' });
+        const generated = sourceMapOutput(result, sourcemap, null, null, mapWrite?.path);
+        if (mapWrite) await writeSafe(mapWrite.path, generated.map, force);
+        if (reportWrite) await writeSafe(reportWrite.path, JSON.stringify([result.report], null, 2), force);
+        process.stdout.write(generated.code);
         return;
     }
 
@@ -160,6 +237,7 @@ async function run() {
     const inputPath = await realpath(resolve(input));
 
     const directory = stats.isDirectory();
+    if (directory && sourcemapFile) throw new Error('sourcemap-file is only supported for one file or stdin');
     const outputPath = outputPathFor(input, parsed.output, directory);
     const canonicalOutput = await canonicalPath(outputPath);
     if (isInside(inputPath, canonicalOutput) || (directory && isInside(canonicalOutput, inputPath))) {
@@ -177,39 +255,38 @@ async function run() {
     }
 
     const inputs = directory ? [...(await Array.fromAsync(walk(inputPath)))] : [inputPath];
-    const identity = item => `${item.dev}:${item.ino}`;
     const inputIdentities = new Set((await Promise.all(inputs.map(file => lstat(file)))).map(identity));
     async function prepareWrite(path) {
-        const existing = await existingStats(path);
-        if (existing?.isSymbolicLink()) throw new Error('Symbolic link output/report files are not supported.');
-        const destination = await canonicalPath(path);
-        if (isInside(inputPath, destination) || (existing && inputIdentities.has(identity(existing)))) {
-            throw new Error('Output/report path must not replace input files.');
+        const destination = await prepareDestination(path, force);
+        if (isInside(inputPath, destination.path) ||
+            (destination.identity && inputIdentities.has(destination.identity))) {
+            throw new Error('Output/report/map path must not replace input files.');
         }
-        if (existing && !existing.isFile()) throw new Error('Output/report destinations must be regular files.');
-        if (existing && !force) throw new Error(`EEXIST: output/report already exists: ${path}`);
-        return { path: destination, identity: existing ? identity(existing) : null };
+        return destination;
     }
     // Validate every destination before creating output or report files.
     const writes = [];
-    const destinations = new Set();
+    const destinations = [];
     for (const file of inputs) {
         const dest = directory ? join(outputPath, relative(inputPath, file)) : outputPath;
         const prepared = await prepareWrite(dest);
-        if (destinations.has(prepared.path)) throw new Error('Output paths must not overlap each other.');
-        destinations.add(prepared.path);
-        writes.push({ file, ...prepared });
+        const mapWrite = ['true', 'hidden'].includes(sourcemap)
+            ? await prepareWrite(sourcemapFile ? resolve(sourcemapFile) : `${prepared.path}.map`)
+            : null;
+        destinations.push(prepared);
+        if (mapWrite) destinations.push(mapWrite);
+        writes.push({ file, ...prepared, mapWrite });
     }
     const reportWrite = report ? await prepareWrite(resolve(report)) : null;
-    if (reportWrite && writes.some(item => item.path === reportWrite.path ||
-        (item.identity && item.identity === reportWrite.identity))) {
-        throw new Error('Report path must not overlap the input or output.');
-    }
+    if (reportWrite) destinations.push(reportWrite);
+    validateDestinations(destinations);
     const reports = [];
-    for (const { file, path } of writes) {
+    for (const { file, path, mapWrite } of writes) {
         const original = await readFile(file, 'utf8');
         const result = obfuscateWithReport(original, options, { fileName: relative(inputPath, file) || file });
-        await writeSafe(path, result.code, force);
+        const generated = sourceMapOutput(result, sourcemap, file, path, mapWrite?.path);
+        await writeSafe(path, generated.code, force);
+        if (mapWrite) await writeSafe(mapWrite.path, generated.map, force);
         reports.push(result.report);
         process.stderr.write(`Obfuscated ${relative(inputPath, file) || file}: ${result.report.beforeBytes} -> ${result.report.afterBytes} bytes\n`);
     }

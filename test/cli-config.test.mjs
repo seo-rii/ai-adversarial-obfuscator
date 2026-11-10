@@ -81,6 +81,35 @@ test('CLI preserves configured adversarial=false and accepts boolean source-map 
     }
 });
 
+test('CLI inline and disabled map modes override inherited external map paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'aiob-config-map-override-'));
+    try {
+        await writeFile(join(root, 'input.js'), 'export const answer = 42;');
+        const config = join(root, 'config.json');
+        const configuredMap = join(root, 'maps/configured.map');
+        await writeFile(config, JSON.stringify({
+            input: 'input.js', preset: 'light', sourcemap: 'hidden', sourcemapFile: 'maps/configured.map'
+        }));
+        for (const mode of ['false', 'inline']) {
+            const output = join(root, `${mode}.js`);
+            const result = runCli(['--config', config, '-o', output, '--sourcemap', mode]);
+            assert.equal(result.status, 0, result.stderr);
+            const code = await readFile(output, 'utf8');
+            if (mode === 'inline') assert.match(code, /sourceMappingURL=data:application\/json/);
+            else assert.doesNotMatch(code, /sourceMappingURL/);
+            await assert.rejects(readFile(configuredMap), { code: 'ENOENT' });
+            const rejectedOutput = join(root, `rejected-${mode}.js`);
+            const invalid = runCli(['--config', config, '-o', rejectedOutput,
+                '--sourcemap', mode, '--sourcemap-file', join(root, 'explicit.map')]);
+            assert.notEqual(invalid.status, 0);
+            assert.match(invalid.stderr, /sourcemap-file requires/);
+            await assert.rejects(readFile(rejectedOutput), { code: 'ENOENT' });
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('CLI globs filter input-relative POSIX paths, with exclusion and explicit CLI precedence', async () => {
     const root = await mkdtemp(join(tmpdir(), 'aiob-config-globs-'));
     try {

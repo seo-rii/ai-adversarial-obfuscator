@@ -88,7 +88,11 @@ async function parseCli(argv) {
     if (!['false', 'true', 'inline', 'hidden'].includes(sourcemap)) {
         throw new Error('sourcemap must be false, true, inline, or hidden');
     }
-    const sourcemapFile = values['sourcemap-file'] ?? config.sourcemapFile;
+    // An explicit inline/disabled mode also overrides the configured external
+    // destination. An explicitly incompatible CLI destination still errors.
+    const configuredMapFile = values.sourcemap !== undefined && !['true', 'hidden'].includes(sourcemap)
+        ? undefined : config.sourcemapFile;
+    const sourcemapFile = values['sourcemap-file'] ?? configuredMapFile;
     if (sourcemapFile !== undefined &&
         (!sourcemapFile || !['true', 'hidden'].includes(sourcemap))) {
         throw new Error('sourcemap-file requires sourcemap=true or sourcemap=hidden');

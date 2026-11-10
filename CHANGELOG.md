@@ -6,6 +6,11 @@ Changes to the project are recorded here. Version entries describe repository de
 
 ### Added
 
+- Per-chunk Vite option policies with module/entry metadata and shared decisions for transformation and final markers.
+- Final raw/gzip/Brotli size, hash, and map metrics; aggregate CI budgets with error or warning behavior.
+- CLI external, inline, and hidden source maps, JSON configuration, include/exclude globs, and write-free `--dry-run`/`--check` modes.
+- Bounded in-memory LRU transformation caching with per-generation hit/miss/eviction reporting and input, policy, output, and map-mode invalidation.
+- A separate Chromium fixture covering DOM interaction, default preload, dynamic imports, real Workers, and strict CSP without `unsafe-eval` or `unsafe-inline`.
 - Source-map generation in the core API through `sourceMap: true`, with a separate `map` result and trailing inert markers.
 - Vite source-map composition and emission for `true`, `'inline'`, and `'hidden'`, following Vite's configuration automatically.
 - Integration coverage for minification backends, original error locations, excluded chunks, repeated builds, and multiple outputs.
@@ -15,6 +20,7 @@ Changes to the project are recorded here. Version entries describe repository de
 - Support Vite's default, Oxc, esbuild, and Terser minification before chunk obfuscation, replacing the minify and source-map configuration restrictions.
 - Keep minification enabled for excluded chunks and isolate report entries for each output and rebuild.
 - Return individual transformation maps from separate ordered hooks so Rolldown handles all map composition and emission without a separate remapping dependency.
+- Extend Vite reports with `schemaVersion: 2`, final output metrics, budget violations, and cache statistics while retaining core transformation measurements. LLM evaluation remains unimplemented and unmeasured.
 
 ### Fixed
 

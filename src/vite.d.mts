@@ -24,6 +24,13 @@ export interface OutputBudgets {
     onExceeded?: 'error' | 'warn';
 }
 
+export interface TransformCacheOptions {
+    /** Default: 128 entries, retained per plugin instance. */
+    maxEntries?: number;
+    /** Maximum serialized payload bytes; default: 32 MiB. */
+    maxBytes?: number;
+}
+
 export interface EmittedChunkMetrics {
     fileName: string;
     bytes: number;
@@ -37,7 +44,7 @@ export interface ViteObfuscationReport {
     schemaVersion: 2;
     plugin: 'ai-adversarial-obfuscator';
     note: string;
-    chunks: (ObfuscationReport & { chunk: string; transformMs: number; emitted: EmittedChunkMetrics })[];
+    chunks: (ObfuscationReport & { chunk: string; transformMs: number; cacheHit: boolean; emitted: EmittedChunkMetrics })[];
     files: (EmittedChunkMetrics & { obfuscated: boolean })[];
     totals: {
         bytes: number;
@@ -49,6 +56,7 @@ export interface ViteObfuscationReport {
         transformMs: number;
     };
     budgetViolations: { metric: 'bytes' | 'gzipBytes' | 'brotliBytes' | 'growthRatio'; actual: number; limit: number }[];
+    cache: { enabled: boolean; entries: number; bytes: number; hits: number; misses: number; evictions: number };
 }
 
 export interface AdversarialViteOptions extends Omit<ObfuscationOptions, 'sourceMap'> {
@@ -56,6 +64,7 @@ export interface AdversarialViteOptions extends Omit<ObfuscationOptions, 'source
     exclude?: ChunkPattern | ChunkPattern[];
     chunkOptions?: (chunk: ObfuscationChunk) => false | ChunkObfuscationOptions | undefined;
     budgets?: OutputBudgets;
+    cache?: boolean | TransformCacheOptions;
     reportFile?: string | false;
 }
 

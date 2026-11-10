@@ -10,8 +10,10 @@ const brotliAsync = promisify(brotliCompress);
 
 /** Post-minify chunk obfuscation for Vite 8, with composed source maps. */
 export function aiAdversarialObfuscator(options = {}) {
-    const { include, exclude, chunkOptions, budgets = {}, reportFile = 'ai-obfuscation-report.json', ...coreOptions } = options;
+    const { include, exclude, chunkOptions, budgets = {}, cache = true,
+        reportFile = 'ai-obfuscation-report.json', ...coreOptions } = options;
     const normalized = normalizeOptions(coreOptions);
+    const transformations = createTransformCache(cache);
     validateBudgets(budgets);
     if (chunkOptions !== undefined && typeof chunkOptions !== 'function') {
         throw new TypeError('chunkOptions must be a function');
@@ -40,6 +42,7 @@ export function aiAdversarialObfuscator(options = {}) {
                 const reports = new Map();
                 const baselines = new Map();
                 const policies = new Map();
+                const cacheStats = { hits: 0, misses: 0, evictions: 0 };
                 function policyFor(chunk) {
                     const fileName = chunk.fileName || `${chunk.name}.js`;
                     if (policies.has(fileName)) return policies.get(fileName);
@@ -96,6 +99,7 @@ export function aiAdversarialObfuscator(options = {}) {
                         reports.clear();
                         baselines.clear();
                         policies.clear();
+                        cacheStats.hits = cacheStats.misses = cacheStats.evictions = 0;
                     },
                     renderChunk: {
                         order: 'post',
@@ -106,18 +110,32 @@ export function aiAdversarialObfuscator(options = {}) {
                                 const policy = policyFor(chunk);
                                 if (!policy) return null;
                                 const started = performance.now();
-                                const { code, map, report } = obfuscateWithReport(source, {
-                                    ...policy,
-                                    sourceMap: !!outputOptions.sourcemap
-                                }, {
+                                const context = {
                                     fileName: chunk.name || chunk.fileName,
                                     // Preserve Rolldown hash placeholders and Vite's
                                     // preload markers until their later substitutions.
                                     reservedStrings: ['!~\\{[^}]+\\}~', '__VITE_']
-                                });
+                                };
+                                const key = transformations.enabled ? createHash('sha256').update(source)
+                                    .update(JSON.stringify({ policy, context, fileName: chunk.fileName,
+                                        format: outputOptions.format, sourcemap: outputOptions.sourcemap }))
+                                    .digest('hex') : null;
+                                let result = transformations.get(key);
+                                const cacheHit = !!result;
+                                if (cacheHit) cacheStats.hits++;
+                                else {
+                                    if (transformations.enabled) cacheStats.misses++;
+                                    result = obfuscateWithReport(source, {
+                                        ...policy,
+                                        sourceMap: !!outputOptions.sourcemap
+                                    }, context);
+                                    cacheStats.evictions += transformations.set(key, result);
+                                }
+                                const { code, map, report } = result;
                                 reports.set(chunk.fileName, {
                                     chunk: chunk.name,
                                     ...report,
+                                    cacheHit,
                                     transformMs: Number((performance.now() - started).toFixed(3))
                                 });
                                 return { code, map };
@@ -180,7 +198,8 @@ export function aiAdversarialObfuscator(options = {}) {
                                     chunks,
                                     files,
                                     totals,
-                                    budgetViolations
+                                    budgetViolations,
+                                    cache: { ...transformations.snapshot(), ...cacheStats }
                                 }, null, 2)
                             });
                         }
@@ -213,6 +232,52 @@ export function aiAdversarialObfuscator(options = {}) {
                 return output;
             }
         }
+    };
+}
+
+function createTransformCache(options) {
+    if (options !== true && options !== false &&
+        (!options || typeof options !== 'object' || Array.isArray(options))) {
+        throw new TypeError('cache must be a boolean or an object');
+    }
+    const limits = { maxEntries: 128, maxBytes: 32 * 1024 * 1024 };
+    if (typeof options === 'object') {
+        for (const [name, value] of Object.entries(options)) {
+            if (!Object.hasOwn(limits, name) || !Number.isSafeInteger(value) || value < 1) {
+                throw new TypeError(`invalid cache option: ${name}`);
+            }
+            limits[name] = value;
+        }
+    }
+    const entries = new Map();
+    let bytes = 0;
+    const enabled = options !== false;
+    return {
+        enabled,
+        get(key) {
+            const entry = entries.get(key);
+            if (!entry) return null;
+            entries.delete(key);
+            entries.set(key, entry);
+            // Native map composition and callers may mutate returned maps.
+            return structuredClone(entry.result);
+        },
+        set(key, result) {
+            if (!enabled) return 0;
+            const size = Buffer.byteLength(key) + Buffer.byteLength(JSON.stringify(result));
+            if (size > limits.maxBytes) return 0;
+            let evictions = 0;
+            while (entries.size >= limits.maxEntries || bytes + size > limits.maxBytes) {
+                const oldest = entries.keys().next().value;
+                bytes -= entries.get(oldest).size;
+                entries.delete(oldest);
+                evictions++;
+            }
+            entries.set(key, { result: structuredClone(result), size });
+            bytes += size;
+            return evictions;
+        },
+        snapshot() { return { enabled, entries: entries.size, bytes }; }
     };
 }
 

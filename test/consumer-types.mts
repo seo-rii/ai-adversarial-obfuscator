@@ -24,6 +24,7 @@ const plugin = aiAdversarialObfuscator({
     chunkOptions: chunk => chunk.moduleIds.some(id => id.includes('/vendor/'))
         ? false : { preset: chunk.isEntry ? 'light' : 'strong' },
     budgets: { maxGzipBytes: 100_000, maxGrowthRatio: 20, onExceeded: 'error' },
+    cache: { maxEntries: 128, maxBytes: 32 * 1024 * 1024 },
     reportFile: false
 });
 

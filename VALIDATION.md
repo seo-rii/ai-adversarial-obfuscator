@@ -1,6 +1,6 @@
 # Validation
 
-Last verified: **2026-11-10**, on Linux. The original `0.1.0` archive is the baseline. The current source adds minify-first Vite processing and composed source maps, with runtime, mapping, and rebuild regressions.
+Last verified: **2026-11-10**, on Linux. The original `0.1.0` archive is the baseline. The current source adds minify-first Vite processing and source maps composed by Rolldown's native pipeline, with runtime, mapping, and rebuild regressions.
 
 ## Environment and results
 
@@ -9,12 +9,11 @@ Dependencies were installed with npm 11.19.1 using the committed lockfile:
 - `javascript-obfuscator` 5.10.0
 - Vite 8.3.6 (Rolldown)
 - TypeScript 7.0.2
-- `@jridgewell/remapping` 2.3.5
 - esbuild 0.28.2 and Terser 5.51.2 (optional Vite backends installed for tests)
 
 | Runtime | Runtime tests | Type declarations | Vite fixture build |
 | --- | --- | --- | --- |
-| Node.js 24.22.1 | 28 passed, 0 failed | Passed | Passed |
+| Node.js 24.22.1 | 29 passed, 0 failed | Passed | Passed |
 
 The archive baseline previously passed 11 tests on Node.js 22.12.0 and 24.22.1. The expanded suite is also run on Node.js 22.12.0 and 24 by GitHub Actions.
 
@@ -40,6 +39,7 @@ The new integration checks cover:
 - `sourcemap: true`, `'inline'`, `'hidden'`, and `false`, including enabled and disabled adversarial markers.
 - Actual thrown error positions mapped through minification, obfuscation, and multiline banners to the original imported module and line, with its original source content.
 - Maps without minification and `sourcemapExcludeSources: true`, preserving positions while omitting embedded source when requested.
+- Native output settings for custom map filenames and URLs, source path transformation, ignore lists, and debug IDs, with emitted-file metadata and runtime checks.
 - Continued minification of excluded chunks and isolated maps/reports across repeated builds, multiple outputs, and watch rebuilds.
 
 The fixture uses `minify: true` and `sourcemap: 'hidden'`.

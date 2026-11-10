@@ -127,9 +127,9 @@ Run the consuming application's normal build command, such as `npm run build`.
 
 The plugin runs during production builds and processes `.js` and `.mjs` chunks. It applies minification before obfuscation in an ordered `renderChunk` hook, then inserts final markers with Rolldown's `postBanner` and `postFooter` hooks. The transformed output and final markers participate in content hashing, preserving chunk references and dynamic imports. Excluded chunks still receive the configured minification.
 
-`build.minify` supports Vite's default, `true`, `'oxc'`, `false`, `'esbuild'`, and `'terser'`. Native Oxc minification runs inside the plugin's final chunk hook before obfuscation; Vite's esbuild and Terser hooks run before that hook. If selecting either optional backend, install it in the consuming project with `npm install -D esbuild` or `npm install -D terser`. With `minify: false`, the obfuscator still compacts its own output.
+`build.minify` supports Vite's default, `true`, `'oxc'`, `false`, `'esbuild'`, and `'terser'`. Native Oxc minification runs in a separate ordered chunk hook immediately before obfuscation; Vite's esbuild and Terser hooks also run before the obfuscation hook. If selecting either optional backend, install it in the consuming project with `npm install -D esbuild` or `npm install -D terser`. With `minify: false`, the obfuscator still compacts its own output.
 
-Source maps follow Vite's configuration automatically; no plugin-specific source-map option or manual plugin reordering is needed. The plugin composes the minifier and obfuscator maps, and Rolldown connects them to the original modules and emits the requested format:
+Source maps follow Vite's configuration automatically; no plugin-specific source-map option or manual plugin reordering is needed. Minification and obfuscation run as separate ordered `renderChunk` hooks, each returning its own transformation map. Rolldown's built-in source-map pipeline composes the complete chain back to the original modules and emits the requested format:
 
 | `build.sourcemap` | Output |
 | --- | --- |
@@ -137,6 +137,8 @@ Source maps follow Vite's configuration automatically; no plugin-specific source
 | `true` | Separate `.map` file and a `sourceMappingURL` comment. |
 | `'inline'` | Source map embedded in the JavaScript as a data URL. |
 | `'hidden'` | Separate `.map` file without a `sourceMappingURL` comment. |
+
+Rolldown output options for map filenames, base URLs, source-path transforms, ignore lists, debug IDs, and excluding source content remain handled by Rolldown.
 
 Source maps can expose original source code. `'hidden'` omits the link; it does not make a deployed `.map` file private. Keep maps private when uploading them to an error-monitoring service. Subsequent tools can still remove markers or alter output, so any later transformation must preserve the map chain.
 

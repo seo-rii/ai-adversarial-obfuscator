@@ -204,6 +204,63 @@ test('Vite source maps compose minification and obfuscation back to original cod
     }
 });
 
+test('Vite preserves native source-map output options', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'aiob-native-map-options-'));
+    const source = 'export function explode() {\n    throw new Error("native-map-options");\n}\n';
+    try {
+        await writeFile(join(root, 'original.mjs'), source);
+        const output = join(root, 'dist');
+        await build({
+            configFile: false,
+            root,
+            logLevel: 'silent',
+            plugins: [aiAdversarialObfuscator({ preset: 'balanced', seed: 91 })],
+            build: {
+                outDir: output,
+                emptyOutDir: true,
+                minify: true,
+                sourcemap: true,
+                lib: {
+                    entry: join(root, 'original.mjs'),
+                    formats: ['es'],
+                    fileName: () => 'bundle.mjs'
+                },
+                rolldownOptions: {
+                    output: {
+                        sourcemapFileNames: 'maps/[name]-[hash:8].map',
+                        sourcemapBaseUrl: 'https://maps.example.invalid/debug/',
+                        sourcemapPathTransform: path => `app:///${path.split('/').at(-1)}`,
+                        sourcemapIgnoreList: /original\.mjs$/,
+                        sourcemapDebugIds: true
+                    }
+                }
+            }
+        });
+        const [mapName, ...otherMaps] = await readdir(join(output, 'maps'));
+        assert.equal(otherMaps.length, 0);
+        assert.match(mapName, /^original-.+\.map$/);
+        const bundle = join(output, 'bundle.mjs');
+        const code = await readFile(bundle, 'utf8');
+        const link = code.match(/sourceMappingURL=(\S+)/);
+        assert.ok(link);
+        assert.equal(link[1], `https://maps.example.invalid/debug/maps/${mapName}`);
+        const payload = JSON.parse(await readFile(join(output, 'maps', mapName), 'utf8'));
+        assert.ok(payload.mappings.length > 0);
+        const originalIndex = payload.sources.indexOf('app:///original.mjs');
+        assert.ok(originalIndex >= 0, JSON.stringify(payload.sources));
+        assert.equal(payload.sourcesContent[originalIndex], source);
+        assert.ok(payload.ignoreList.includes(originalIndex));
+        assert.equal(typeof payload.debugId, 'string');
+        assert.ok(payload.debugId.length > 0);
+        assert.ok(code.includes(`debugId=${payload.debugId}`));
+
+        const imported = await import(pathToFileURL(bundle).href);
+        assert.throws(() => imported.explode(), /native-map-options/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('Vite minifies excluded chunks while leaving their source unobfuscated', async () => {
     const root = await mkdtemp(join(tmpdir(), 'aiob-excluded-minify-'));
     try {

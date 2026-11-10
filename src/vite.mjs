@@ -1,4 +1,3 @@
-import remapping from '@jridgewell/remapping';
 import { minify as minifyWithOxc } from 'vite';
 import { createAdversarialBlock, obfuscateWithReport, normalizeOptions } from './core.mjs';
 
@@ -28,7 +27,32 @@ export function aiAdversarialObfuscator(options = {}) {
                 if (nativeMinify) output.minify = false;
                 // Per-output state also prevents report accumulation on rebuilds.
                 const reports = [];
-                output.plugins = [output.plugins, {
+                output.plugins = [output.plugins, nativeMinify && {
+                    name: 'ai-adversarial-obfuscator:minify',
+                    renderChunk: {
+                        order: 'post',
+                        async handler(source, chunk, outputOptions) {
+                            try {
+                                const settings = typeof nativeMinify === 'object' ? nativeMinify : {};
+                                const minified = await minifyWithOxc(chunk.fileName, source, {
+                                    ...settings,
+                                    module: outputOptions.format === 'es',
+                                    sourcemap: !!outputOptions.sourcemap
+                                });
+                                if (minified.errors.length) {
+                                    throw new Error(minified.errors.map(error => error.message).join('\n'));
+                                }
+                                // Returning each transform's own map lets Rolldown
+                                // compose the entire chain using its normal pipeline.
+                                return { code: minified.code, map: minified.map ?? null };
+                            } catch (error) {
+                                throw new Error(`[ai-adversarial-obfuscator] Failed to minify ${chunk.fileName}: ${error.message}`, {
+                                    cause: error
+                                });
+                            }
+                        }
+                    }
+                }, {
                     name: 'ai-adversarial-obfuscator:output',
                     renderStart() {
                         // Watch mode reuses output plugins without outputOptions.
@@ -37,30 +61,12 @@ export function aiAdversarialObfuscator(options = {}) {
                     renderChunk: {
                         order: 'post',
                         async handler(source, chunk, outputOptions) {
+                            // Exclude skips obfuscation, not the preceding minifier.
+                            if (!matches(chunk.fileName)) return null;
                             try {
-                                let input = source;
-                                let minifyMap = null;
-                                const sourceMap = !!outputOptions.sourcemap;
-                                if (nativeMinify) {
-                                    const settings = typeof nativeMinify === 'object' ? nativeMinify : {};
-                                    const minified = await minifyWithOxc(chunk.fileName, source, {
-                                        ...settings,
-                                        module: outputOptions.format === 'es',
-                                        sourcemap: sourceMap
-                                    });
-                                    if (minified.errors.length) {
-                                        throw new Error(minified.errors.map(error => error.message).join('\n'));
-                                    }
-                                    input = minified.code;
-                                    minifyMap = minified.map ?? null;
-                                }
-                                // Exclude skips obfuscation, not the configured minifier.
-                                if (!matches(chunk.fileName)) {
-                                    return nativeMinify ? { code: input, map: minifyMap } : null;
-                                }
-                                const { code, map, report } = obfuscateWithReport(input, {
+                                const { code, map, report } = obfuscateWithReport(source, {
                                     ...coreOptions,
-                                    sourceMap
+                                    sourceMap: !!outputOptions.sourcemap
                                 }, {
                                     fileName: chunk.name || chunk.fileName,
                                     // Preserve Rolldown hash placeholders and Vite's
@@ -68,10 +74,7 @@ export function aiAdversarialObfuscator(options = {}) {
                                     reservedStrings: ['!~\\{[^}]+\\}~', '__VITE_']
                                 });
                                 reports.push({ chunk: chunk.name, ...report });
-                                return {
-                                    code,
-                                    map: map && minifyMap ? remapping([map, minifyMap], () => null) : map
-                                };
+                                return { code, map };
                             } catch (error) {
                                 throw new Error(`[ai-adversarial-obfuscator] Failed to transform ${chunk.fileName}: ${error.message}`, {
                                     cause: error

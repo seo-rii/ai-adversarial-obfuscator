@@ -52,7 +52,6 @@
     "build:fixture": "vite build --config fixtures/vite/vite.config.mjs"
   },
   "dependencies": {
-    "@jridgewell/remapping": "^2.3.5",
     "javascript-obfuscator": "^5.10.0"
   },
   "peerDependencies": {

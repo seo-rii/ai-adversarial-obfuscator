@@ -14,6 +14,7 @@ Changes to the project are recorded here. Version entries describe repository de
 
 - Support Vite's default, Oxc, esbuild, and Terser minification before chunk obfuscation, replacing the minify and source-map configuration restrictions.
 - Keep minification enabled for excluded chunks and isolate report entries for each output and rebuild.
+- Return individual transformation maps from separate ordered hooks so Rolldown handles all map composition and emission without a separate remapping dependency.
 
 ## [0.1.0] - 2026-11-10
 

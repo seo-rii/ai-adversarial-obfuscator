@@ -127,9 +127,9 @@ export default defineConfig({
 
 플러그인은 프로덕션 빌드의 `.js`와 `.mjs` 청크를 처리합니다. 순서를 지정한 `renderChunk` 훅에서 minify 이후에 난독화를 적용하고, Rolldown의 `postBanner`와 `postFooter`에서 최종 마커를 삽입합니다. 변환 결과와 최종 마커가 콘텐츠 해시에 반영되어 청크 참조와 동적 import를 유지합니다. 난독화에서 제외한 청크에도 설정된 minify는 적용됩니다.
 
-`build.minify`는 Vite 기본값, `true`, `'oxc'`, `false`, `'esbuild'`, `'terser'`를 지원합니다. 기본 Oxc minify는 플러그인의 마지막 청크 훅 안에서 난독화 전에 실행하고, Vite의 esbuild·Terser 훅은 그 훅보다 먼저 실행됩니다. 선택한 추가 백엔드는 사용하는 프로젝트에서 `npm install -D esbuild` 또는 `npm install -D terser`로 설치해야 합니다. `minify: false`여도 난독화기는 자체 출력 코드를 압축합니다.
+`build.minify`는 Vite 기본값, `true`, `'oxc'`, `false`, `'esbuild'`, `'terser'`를 지원합니다. 기본 Oxc minify는 난독화 바로 앞의 별도 청크 훅에서 실행하고, Vite의 esbuild·Terser 훅도 난독화 훅보다 먼저 실행됩니다. 선택한 추가 백엔드는 사용하는 프로젝트에서 `npm install -D esbuild` 또는 `npm install -D terser`로 설치해야 합니다. `minify: false`여도 난독화기는 자체 출력 코드를 압축합니다.
 
-소스맵은 Vite 설정을 자동으로 따르며, 별도의 플러그인 옵션이나 수동 순서 조정이 필요하지 않습니다. 플러그인이 minify·난독화 소스맵을 합성하고, Rolldown이 원본 모듈까지 연결한 뒤 요청한 형식으로 출력합니다.
+소스맵은 Vite 설정을 자동으로 따르며, 별도의 플러그인 옵션이나 수동 순서 조정이 필요하지 않습니다. minify와 난독화는 별도의 순서 지정 `renderChunk` 훅에서 실행하며, 각 훅은 자신이 수행한 변환의 맵만 반환합니다. Rolldown의 기본 소스맵 파이프라인이 전체 변환을 원본 모듈까지 연결하고 요청한 형식으로 출력합니다.
 
 | `build.sourcemap` | 출력 |
 | --- | --- |
@@ -137,6 +137,8 @@ export default defineConfig({
 | `true` | 별도 `.map` 파일과 `sourceMappingURL` 주석 |
 | `'inline'` | JavaScript 안에 data URL로 포함한 소스맵 |
 | `'hidden'` | `sourceMappingURL` 주석 없이 별도 `.map` 파일 |
+
+맵 파일명, 기본 URL, 원본 경로 변환, ignore list, debug ID와 원본 내용 제외 등 Rolldown 출력 옵션도 Rolldown이 그대로 처리합니다.
 
 소스맵은 원본 코드를 노출할 수 있습니다. `'hidden'`은 링크만 생략하며 배포한 `.map` 파일을 비공개로 만들지는 않습니다. 오류 수집 서비스에 업로드할 소스맵은 비공개로 보관하세요. 이후 처리 도구가 마커나 출력을 바꿀 수 있으므로 추가 변환이 있다면 소스맵 연결도 유지해야 합니다.
 

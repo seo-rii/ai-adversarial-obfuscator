@@ -49,7 +49,8 @@
     "test:types": "tsc -p test/tsconfig.json",
     "test:unit": "node --test test/core.test.mjs test/cli.test.mjs",
     "test:vite": "node --test test/vite.test.mjs",
-    "build:fixture": "vite build --config fixtures/vite/vite.config.mjs"
+    "build:fixture": "vite build --config fixtures/vite/vite.config.mjs",
+    "test:browser": "node --test test/browser/*.test.mjs"
   },
   "dependencies": {
     "javascript-obfuscator": "^5.10.0"
@@ -64,6 +65,7 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
+    "playwright": "^1.65.0",
     "terser": "^5.51.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.6"

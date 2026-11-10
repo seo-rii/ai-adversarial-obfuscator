@@ -33,3 +33,7 @@ jobs:
       - run: npm run test:types
       - run: npm run build:fixture
       - run: npm pack --dry-run
+      - if: matrix.node == '24'
+        run: npx --no-install playwright install --with-deps chromium --only-shell
+      - if: matrix.node == '24'
+        run: npm run test:browser

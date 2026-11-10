@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -78,6 +78,127 @@ test('CLI prevents overlapping input/output directories and rejects bad flags', 
         const reportOverlap = runCli([join(input, 'app.js'), '-o', join(dir, 'out.js'), '--report', join(input, 'app.js'), '--force']);
         assert.notEqual(reportOverlap.status, 0);
         assert.match(reportOverlap.stderr, /Report path must not overlap/);
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('CLI refuses output and report file aliases without changing inputs under --force', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aiob-file-aliases-'));
+    try {
+        for (const kind of ['symlink', 'hardlink']) {
+            for (const destination of ['output', 'report']) {
+                const input = join(dir, `${kind}-${destination}-input.js`);
+                const alias = join(dir, `${kind}-${destination}-alias.js`);
+                const output = destination === 'output' ? alias : join(dir, `${kind}-protected.js`);
+                const original = 'export const original = 123;';
+                await writeFile(input, original);
+                await (kind === 'symlink' ? symlink(input, alias) : link(input, alias));
+                const result = runCli([input, '-o', output, '--preset', 'light', '--force',
+                    ...(destination === 'report' ? ['--report', alias] : [])]);
+                assert.notEqual(result.status, 0, `${kind} ${destination} alias must be rejected`);
+                assert.equal(await readFile(input, 'utf8'), original);
+                if (destination === 'report') await assert.rejects(readFile(output), { code: 'ENOENT' });
+            }
+        }
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('CLI checks canonical directory paths and report collisions before writing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aiob-directory-aliases-'));
+    try {
+        const input = join(dir, 'source');
+        const alias = join(dir, 'source-alias');
+        const output = join(dir, 'protected');
+        const original = 'export const original = 7;';
+        await mkdir(join(input, 'sub'), { recursive: true });
+        await writeFile(join(input, 'app.js'), original);
+        await writeFile(join(input, 'sub', 'nested.js'), original);
+        await symlink(input, alias, 'dir');
+
+        for (const args of [
+            [input, '-o', alias],
+            [input, '-o', join(alias, 'nested-output')],
+            [join(alias, 'app.js'), '-o', join(input, 'app.js')],
+            [input, '-o', output, '--report', join(output, 'app.js')]
+        ]) {
+            const result = runCli([...args, '--preset', 'light', '--force']);
+            assert.notEqual(result.status, 0, result.stderr);
+            assert.equal(await readFile(join(input, 'app.js'), 'utf8'), original);
+            assert.equal(await readFile(join(input, 'sub', 'nested.js'), 'utf8'), original);
+        }
+        await assert.rejects(readFile(join(output, 'app.js')), { code: 'ENOENT' });
+
+        // An existing output subdirectory can hide an alias into the input tree.
+        await mkdir(output);
+        await symlink(join(input, 'sub'), join(output, 'sub'), 'dir');
+        const nested = runCli([input, '-o', output, '--preset', 'light', '--force']);
+        assert.notEqual(nested.status, 0);
+        assert.equal(await readFile(join(input, 'sub', 'nested.js'), 'utf8'), original);
+        await assert.rejects(readFile(join(output, 'app.js')), { code: 'ENOENT' });
+
+        const reportAlias = join(dir, 'output-alias');
+        await symlink(output, reportAlias, 'dir');
+        const report = runCli([join(input, 'app.js'), '-o', join(output, 'app.js'),
+            '--report', join(reportAlias, 'app.js'), '--preset', 'light', '--force']);
+        assert.notEqual(report.status, 0);
+        assert.equal(await readFile(join(input, 'app.js'), 'utf8'), original);
+        await assert.rejects(readFile(join(output, 'app.js')), { code: 'ENOENT' });
+
+        const existingOutput = join(output, 'app.js');
+        const hardlinkedReport = join(dir, 'output-report-hardlink.json');
+        await writeFile(existingOutput, 'old protected output');
+        await link(existingOutput, hardlinkedReport);
+        const sharedOutput = runCli([join(input, 'app.js'), '-o', existingOutput,
+            '--report', hardlinkedReport, '--preset', 'light', '--force']);
+        assert.notEqual(sharedOutput.status, 0);
+        assert.equal(await readFile(existingOutput, 'utf8'), 'old protected output');
+        assert.equal(await readFile(join(input, 'app.js'), 'utf8'), original);
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('CLI preserves normal forced writes and safely replaces stdin report hardlinks', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aiob-safe-force-'));
+    try {
+        const input = join(dir, 'input.js');
+        const output = join(dir, 'nested', 'output.js');
+        const report = join(dir, 'report.json');
+        const original = 'export const original = 42;';
+        await writeFile(input, original);
+        await mkdir(join(dir, 'nested'));
+        await writeFile(output, 'old output');
+        await writeFile(report, 'old report');
+        const result = runCli([input, '-o', output, '--report', report, '--preset', 'light', '--force']);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(await readFile(input, 'utf8'), original);
+        assert.match(await readFile(output, 'utf8'), /AI_ANALYSIS_DECOY/);
+        assert.equal(JSON.parse(await readFile(report, 'utf8')).length, 1);
+
+        const hardlinkedReport = join(dir, 'hardlinked-report.json');
+        await link(input, hardlinkedReport);
+        const stdin = runCli(['-', '-o', '-', '--report', hardlinkedReport, '--preset', 'light', '--force'], original);
+        assert.equal(stdin.status, 0, stdin.stderr);
+        assert.equal(await readFile(input, 'utf8'), original);
+        assert.equal(JSON.parse(await readFile(hardlinkedReport, 'utf8')).length, 1);
+
+        const symlinkedReport = join(dir, 'symlinked-report.json');
+        await symlink(input, symlinkedReport);
+        const symlinkResult = runCli(['-', '-o', '-', '--report', symlinkedReport, '--preset', 'light', '--force'], original);
+        assert.notEqual(symlinkResult.status, 0);
+        assert.equal(await readFile(input, 'utf8'), original);
+
+        const realOutput = join(dir, 'real-output');
+        const outputAlias = join(dir, 'safe-output-alias');
+        await mkdir(realOutput);
+        await symlink(realOutput, outputAlias, 'dir');
+        const aliasedParent = runCli([input, '-o', join(outputAlias, 'app.js'), '--preset', 'light', '--force']);
+        assert.equal(aliasedParent.status, 0, aliasedParent.stderr);
+        assert.match(await readFile(join(realOutput, 'app.js'), 'utf8'), /AI_ANALYSIS_DECOY/);
+        assert.equal(await readFile(input, 'utf8'), original);
     } finally {
         await rm(dir, { recursive: true, force: true });
     }

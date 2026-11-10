@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { parseArgs } from 'node:util';
-import { dirname, extname, join, relative, resolve, sep } from 'node:path';
-import { readFile, writeFile, mkdir, readdir, lstat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { readFile, writeFile, mkdir, readdir, lstat, realpath, rename, rm } from 'node:fs/promises';
 import { obfuscateWithReport, PRESETS } from '../src/core.mjs';
 
 const HELP = `ai-obfuscate — JavaScript obfuscator with optional LLM-analysis decoys
@@ -72,9 +73,49 @@ async function readStdin() {
     return text;
 }
 
+async function existingStats(path) {
+    try {
+        return await lstat(path);
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    }
+}
+
+// Resolve existing ancestors even when the destination has not been created.
+async function canonicalPath(path) {
+    let ancestor = resolve(path);
+    const suffix = [];
+    for (;;) {
+        try {
+            return join(await realpath(ancestor), ...suffix);
+        } catch (error) {
+            if (error.code !== 'ENOENT' || dirname(ancestor) === ancestor) throw error;
+            suffix.unshift(basename(ancestor));
+            ancestor = dirname(ancestor);
+        }
+    }
+}
+
 async function writeSafe(path, content, force) {
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content, { flag: force ? 'w' : 'wx' });
+    const existing = await existingStats(path);
+    if (existing?.isSymbolicLink()) throw new Error('Symbolic link output/report files are not supported.');
+    if (existing && !existing.isFile()) throw new Error('Output/report destinations must be regular files.');
+    const destination = join(await canonicalPath(dirname(path)), basename(path));
+    await mkdir(dirname(destination), { recursive: true });
+    if (!force) {
+        await writeFile(destination, content, { flag: 'wx' });
+        return;
+    }
+    // Replace the directory entry atomically instead of following a hardlink
+    // or a symlink that appeared after validation and truncating its target.
+    const temporary = join(dirname(destination), `.ai-obfuscate-${randomUUID()}.tmp`);
+    try {
+        await writeFile(temporary, content, { flag: 'wx', mode: existing ? existing.mode & 0o777 : 0o666 });
+        await rename(temporary, destination);
+    } finally {
+        await rm(temporary, { force: true });
+    }
 }
 
 async function* walk(dir) {
@@ -113,38 +154,66 @@ async function run() {
         return;
     }
 
-    const inputPath = resolve(input);
-    const stats = await lstat(inputPath);
+    const stats = await lstat(resolve(input));
     if (stats.isSymbolicLink()) throw new Error('Symbolic link inputs are not supported.');
     if (!stats.isFile() && !stats.isDirectory()) throw new Error('Input must be a file or directory.');
+    const inputPath = await realpath(resolve(input));
 
     const directory = stats.isDirectory();
     const outputPath = outputPathFor(input, parsed.output, directory);
-    if (isInside(inputPath, outputPath) || (directory && isInside(outputPath, inputPath))) {
+    const canonicalOutput = await canonicalPath(outputPath);
+    if (isInside(inputPath, canonicalOutput) || (directory && isInside(canonicalOutput, inputPath))) {
         throw new Error('Input and output directories may not overlap.');
     }
     if (!directory && !/\.(js|mjs|cjs)$/i.test(extname(inputPath))) {
         throw new Error('Input file must have .js, .mjs or .cjs extension.');
     }
     if (report) {
-        const reportPath = resolve(report);
-        if (reportPath === inputPath || reportPath === outputPath ||
+        const reportPath = await canonicalPath(resolve(report));
+        if (reportPath === inputPath || isInside(canonicalOutput, reportPath) || isInside(reportPath, canonicalOutput) ||
             (directory && isInside(inputPath, reportPath))) {
             throw new Error('Report path must not overlap the input or output.');
         }
     }
 
     const inputs = directory ? [...(await Array.fromAsync(walk(inputPath)))] : [inputPath];
-    const reports = [];
+    const identity = item => `${item.dev}:${item.ino}`;
+    const inputIdentities = new Set((await Promise.all(inputs.map(file => lstat(file)))).map(identity));
+    async function prepareWrite(path) {
+        const existing = await existingStats(path);
+        if (existing?.isSymbolicLink()) throw new Error('Symbolic link output/report files are not supported.');
+        const destination = await canonicalPath(path);
+        if (isInside(inputPath, destination) || (existing && inputIdentities.has(identity(existing)))) {
+            throw new Error('Output/report path must not replace input files.');
+        }
+        if (existing && !existing.isFile()) throw new Error('Output/report destinations must be regular files.');
+        if (existing && !force) throw new Error(`EEXIST: output/report already exists: ${path}`);
+        return { path: destination, identity: existing ? identity(existing) : null };
+    }
+    // Validate every destination before creating output or report files.
+    const writes = [];
+    const destinations = new Set();
     for (const file of inputs) {
         const dest = directory ? join(outputPath, relative(inputPath, file)) : outputPath;
+        const prepared = await prepareWrite(dest);
+        if (destinations.has(prepared.path)) throw new Error('Output paths must not overlap each other.');
+        destinations.add(prepared.path);
+        writes.push({ file, ...prepared });
+    }
+    const reportWrite = report ? await prepareWrite(resolve(report)) : null;
+    if (reportWrite && writes.some(item => item.path === reportWrite.path ||
+        (item.identity && item.identity === reportWrite.identity))) {
+        throw new Error('Report path must not overlap the input or output.');
+    }
+    const reports = [];
+    for (const { file, path } of writes) {
         const original = await readFile(file, 'utf8');
         const result = obfuscateWithReport(original, options, { fileName: relative(inputPath, file) || file });
-        await writeSafe(dest, result.code, force);
+        await writeSafe(path, result.code, force);
         reports.push(result.report);
         process.stderr.write(`Obfuscated ${relative(inputPath, file) || file}: ${result.report.beforeBytes} -> ${result.report.afterBytes} bytes\n`);
     }
-    if (report) await writeSafe(resolve(report), JSON.stringify(reports, null, 2), force);
+    if (reportWrite) await writeSafe(reportWrite.path, JSON.stringify(reports, null, 2), force);
     process.stderr.write(`Completed ${reports.length} file(s). LLM resistance has not been measured.\n`);
 }
 

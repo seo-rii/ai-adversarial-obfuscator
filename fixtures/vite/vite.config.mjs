@@ -7,8 +7,8 @@ export default defineConfig({
     base: './',
     build: {
         outDir: 'dist',
-        minify: false,
-        sourcemap: false,
+        minify: true,
+        sourcemap: 'hidden',
         modulePreload: { polyfill: false }
     },
     plugins: [aiAdversarialObfuscator({ preset: 'balanced', seed: 2026 })]

@@ -4,6 +4,17 @@ Changes to the project are recorded here. Version entries describe repository de
 
 ## [Unreleased]
 
+### Added
+
+- Source-map generation in the core API through `sourceMap: true`, with a separate `map` result and offsets for prepended markers.
+- Vite source-map composition and emission for `true`, `'inline'`, and `'hidden'`, following Vite's configuration automatically.
+- Integration coverage for minification backends, original error locations, excluded chunks, repeated builds, and multiple outputs.
+
+### Changed
+
+- Support Vite's default, Oxc, esbuild, and Terser minification before chunk obfuscation, replacing the minify and source-map configuration restrictions.
+- Keep minification enabled for excluded chunks and isolate report entries for each output and rebuild.
+
 ## [0.1.0] - 2026-11-10
 
 ### Added

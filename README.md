@@ -12,7 +12,7 @@ The implementation combines [`javascript-obfuscator`](https://github.com/javascr
 - Repeatable transformations with a fixed seed, input, file context, and dependency versions.
 - Optional `refusal` comments or neutral `topic` markers, with custom subject labels.
 - CLI support for individual files, directory trees, and stdin/stdout.
-- Vite production builds with code splitting and dynamic imports.
+- Vite production builds with minification, source maps, code splitting, and dynamic imports.
 - JSON reports with byte counts and SHA-256 digests.
 - An option to disable adversarial markers and use ordinary obfuscation.
 
@@ -95,6 +95,8 @@ console.log(report.beforeBytes, report.afterBytes);
 
 The root export also provides `obfuscateSource(source, options, context)` for a string result, `normalizeOptions(options)`, `createAdversarialBlock(options, context)`, `DEFAULT_TERMS`, and `PRESETS`. Type declarations are included in `src/*.d.mts`.
 
+For a source map, pass `sourceMap: true` to `obfuscateWithReport`. Its result includes `map`, which maps the returned code back to the input, including the offset of any prepended decoy block. Otherwise `map` is `null`. The core API returns the map without writing a file or adding a `sourceMappingURL` comment; the caller handles storage and linking. The CLI has no source-map flag.
+
 ## Vite plugin
 
 Install the local package in a Vite 8 project, then add it to `vite.config.ts`:
@@ -115,17 +117,28 @@ export default defineConfig({
         })
     ],
     build: {
-        minify: false,
-        sourcemap: false
+        minify: true, // Or omit to use Vite's default.
+        sourcemap: 'hidden'
     }
 });
 ```
 
 Run the consuming application's normal build command, such as `npm run build`.
 
-The plugin runs during production builds. It obfuscates chunks in `renderChunk`, then inserts final markers with Rolldown's `postBanner` and `postFooter` hooks so they survive the final rendering pass and participate in content hashing. It processes `.js` and `.mjs` chunks.
+The plugin runs during production builds and processes `.js` and `.mjs` chunks. It applies minification before obfuscation in an ordered `renderChunk` hook, then inserts final markers with Rolldown's `postBanner` and `postFooter` hooks. The transformed output and final markers participate in content hashing, preserving chunk references and dynamic imports. Excluded chunks still receive the configured minification.
 
-**Set `build.minify: false` and `build.sourcemap: false`.** The plugin rejects other minification settings and enabled source maps, including when `adversarial` is `false`. The obfuscator handles compaction itself. Subsequent tools can still remove markers or alter the output.
+`build.minify` supports Vite's default, `true`, `'oxc'`, `false`, `'esbuild'`, and `'terser'`. Native Oxc minification runs inside the plugin's final chunk hook before obfuscation; Vite's esbuild and Terser hooks run before that hook. If selecting either optional backend, install it in the consuming project with `npm install -D esbuild` or `npm install -D terser`. With `minify: false`, the obfuscator still compacts its own output.
+
+Source maps follow Vite's configuration automatically; no plugin-specific source-map option or manual plugin reordering is needed. The plugin composes the minifier and obfuscator maps, and Rolldown connects them to the original modules and emits the requested format:
+
+| `build.sourcemap` | Output |
+| --- | --- |
+| `false` | No source map. |
+| `true` | Separate `.map` file and a `sourceMappingURL` comment. |
+| `'inline'` | Source map embedded in the JavaScript as a data URL. |
+| `'hidden'` | Separate `.map` file without a `sourceMappingURL` comment. |
+
+Source maps can expose original source code. `'hidden'` omits the link; it does not make a deployed `.map` file private. Keep maps private when uploading them to an error-monitoring service. Subsequent tools can still remove markers or alter output, so any later transformation must preserve the map chain.
 
 ## Options
 
@@ -140,6 +153,8 @@ The core API and Vite plugin share these options. The CLI exposes their correspo
 | `terms` | Four built-in labels | An array of 1–16 nonempty strings, each at most 80 characters. Control characters and comment terminators are sanitized. |
 | `target` | `browser` | `browser` or `node`; selects the obfuscator's runtime target. |
 
+The core API additionally accepts `sourceMap: true` (default: `false`) to return a map from `obfuscateWithReport`. For Vite, configure `build.sourcemap` instead.
+
 Additional Vite options:
 
 | Option | Default | Description |
@@ -147,7 +162,7 @@ Additional Vite options:
 | `include` / `exclude` | Unset | Match chunk file names using a substring, `RegExp`, predicate, or array of those patterns. Exclusions take precedence. |
 | `reportFile` | `ai-obfuscation-report.json` | A relative `.json` asset path, or `false` to disable the report. |
 
-Each core report includes `fileName`, selected options, `sourceSha256`, `outputSha256`, `beforeBytes`, `afterBytes`, `sizeRatio`, and `evaluation: 'not-performed'`. Vite emits these reports under `chunks`, together with each chunk's name. Vite measurements describe the `renderChunk` transformation and can differ from the final on-disk bytes and digest after output hooks and rendering.
+Each core report includes `fileName`, selected options, `sourceSha256`, `outputSha256`, `beforeBytes`, `afterBytes`, `sizeRatio`, and `evaluation: 'not-performed'`. Vite emits these reports under `chunks`, together with each chunk's name. Its input measurements describe the code after any configured minification, and output measurements describe the obfuscation result in `renderChunk`. They can differ from final on-disk bytes and digests after output hooks, rendering, and source-map linking. Each output or rebuild receives its own report entries.
 
 ## Presets
 
@@ -169,7 +184,7 @@ npm run build:fixture
 npm pack --dry-run
 ```
 
-The tests exercise all presets, deterministic output, option validation, CLI file/directory/stream handling, CJS execution, Vite chunk imports, dynamic imports, marker persistence, content hashes, exclusions, and rejected build settings. Vite execution tests use Node's ESM loader; they are not browser end-to-end tests. See [VALIDATION.md](VALIDATION.md) for the recorded environment and results.
+The tests exercise all presets, deterministic output, option validation, CLI file/directory/stream handling, CJS execution, Vite minification backends, chunk imports, dynamic imports, marker persistence, content hashes, exclusions, and source-map emission. Source-map checks resolve thrown errors back to original source lines through the transform chain. Vite execution tests use Node's ESM loader; they are not browser end-to-end tests. See [VALIDATION.md](VALIDATION.md) for the recorded environment and results.
 
 ```text
 bin/                    Command-line entry point

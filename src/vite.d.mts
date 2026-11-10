@@ -3,7 +3,7 @@ import type { ObfuscationOptions } from './core.mjs';
 
 type ChunkPattern = string | RegExp | ((name: string) => boolean);
 
-export interface AdversarialViteOptions extends ObfuscationOptions {
+export interface AdversarialViteOptions extends Omit<ObfuscationOptions, 'sourceMap'> {
     include?: ChunkPattern | ChunkPattern[];
     exclude?: ChunkPattern | ChunkPattern[];
     reportFile?: string | false;

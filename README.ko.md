@@ -12,7 +12,7 @@ JavaScript 난독화에 비기능적 마커를 선택적으로 추가하여 LLM 
 - 시드, 입력, 파일 컨텍스트와 의존성 버전이 같을 때 재현 가능한 변환
 - 분석 중단을 요청하는 `refusal` 주석 또는 중립적인 `topic` 마커와 사용자 정의 용어
 - 단일 파일, 디렉터리 트리와 stdin/stdout을 지원하는 CLI
-- 코드 분할과 동적 import를 사용하는 Vite 프로덕션 빌드 지원
+- minify, 소스맵, 코드 분할과 동적 import를 사용하는 Vite 프로덕션 빌드 지원
 - 바이트 수와 SHA-256 해시를 담은 JSON 보고서
 - 마커를 끄고 일반 JavaScript 난독화만 수행하는 옵션
 
@@ -95,6 +95,8 @@ console.log(report.beforeBytes, report.afterBytes);
 
 루트 진입점은 문자열만 반환하는 `obfuscateSource(source, options, context)`와 `normalizeOptions(options)`, `createAdversarialBlock(options, context)`, `DEFAULT_TERMS`, `PRESETS`도 제공합니다. TypeScript 선언은 `src/*.d.mts`에 포함되어 있습니다.
 
+소스맵이 필요하면 `obfuscateWithReport`에 `sourceMap: true`를 전달합니다. 반환값의 `map`은 앞에 추가된 마커 블록의 위치 차이까지 반영하여 결과 코드를 입력 코드에 연결합니다. 기본값은 `null`입니다. 코어 API는 파일을 쓰거나 `sourceMappingURL` 주석을 추가하지 않으므로 호출자가 소스맵을 저장하고 연결해야 합니다. CLI에는 소스맵 플래그가 없습니다.
+
 ## Vite 플러그인
 
 Vite 8 프로젝트에 로컬 패키지를 설치한 뒤 `vite.config.ts`에 추가합니다.
@@ -115,17 +117,28 @@ export default defineConfig({
         })
     ],
     build: {
-        minify: false,
-        sourcemap: false
+        minify: true, // 생략하면 Vite 기본값을 사용합니다.
+        sourcemap: 'hidden'
     }
 });
 ```
 
 사용하는 애플리케이션의 일반 빌드 명령(예: `npm run build`)을 실행합니다.
 
-플러그인은 프로덕션 빌드에 적용됩니다. `renderChunk`에서 청크를 난독화하고, Rolldown의 `postBanner`와 `postFooter`에서 최종 마커를 삽입하여 마지막 렌더링 이후에도 마커가 남고 콘텐츠 해시에 반영되도록 합니다. `.js`와 `.mjs` 청크를 처리합니다.
+플러그인은 프로덕션 빌드의 `.js`와 `.mjs` 청크를 처리합니다. 순서를 지정한 `renderChunk` 훅에서 minify 이후에 난독화를 적용하고, Rolldown의 `postBanner`와 `postFooter`에서 최종 마커를 삽입합니다. 변환 결과와 최종 마커가 콘텐츠 해시에 반영되어 청크 참조와 동적 import를 유지합니다. 난독화에서 제외한 청크에도 설정된 minify는 적용됩니다.
 
-**`build.minify: false`와 `build.sourcemap: false`를 설정해야 합니다.** `adversarial`이 `false`인 경우에도 다른 minify 설정이나 활성화된 소스맵은 오류로 거부합니다. 난독화기가 자체적으로 코드를 압축합니다. 이후 처리 도구는 마커를 제거하거나 결과를 변경할 수 있습니다.
+`build.minify`는 Vite 기본값, `true`, `'oxc'`, `false`, `'esbuild'`, `'terser'`를 지원합니다. 기본 Oxc minify는 플러그인의 마지막 청크 훅 안에서 난독화 전에 실행하고, Vite의 esbuild·Terser 훅은 그 훅보다 먼저 실행됩니다. 선택한 추가 백엔드는 사용하는 프로젝트에서 `npm install -D esbuild` 또는 `npm install -D terser`로 설치해야 합니다. `minify: false`여도 난독화기는 자체 출력 코드를 압축합니다.
+
+소스맵은 Vite 설정을 자동으로 따르며, 별도의 플러그인 옵션이나 수동 순서 조정이 필요하지 않습니다. 플러그인이 minify·난독화 소스맵을 합성하고, Rolldown이 원본 모듈까지 연결한 뒤 요청한 형식으로 출력합니다.
+
+| `build.sourcemap` | 출력 |
+| --- | --- |
+| `false` | 소스맵을 생성하지 않음 |
+| `true` | 별도 `.map` 파일과 `sourceMappingURL` 주석 |
+| `'inline'` | JavaScript 안에 data URL로 포함한 소스맵 |
+| `'hidden'` | `sourceMappingURL` 주석 없이 별도 `.map` 파일 |
+
+소스맵은 원본 코드를 노출할 수 있습니다. `'hidden'`은 링크만 생략하며 배포한 `.map` 파일을 비공개로 만들지는 않습니다. 오류 수집 서비스에 업로드할 소스맵은 비공개로 보관하세요. 이후 처리 도구가 마커나 출력을 바꿀 수 있으므로 추가 변환이 있다면 소스맵 연결도 유지해야 합니다.
 
 ## 옵션
 
@@ -140,6 +153,8 @@ export default defineConfig({
 | `terms` | 기본 용어 4개 | 비어 있지 않은 문자열 1~16개의 배열. 각 용어는 최대 80자이며 제어 문자와 주석 종료 문자를 정리함 |
 | `target` | `browser` | 난독화기의 실행 대상인 `browser` 또는 `node` |
 
+코어 API에서는 `sourceMap: true`(기본값: `false`)를 추가로 지정하여 `obfuscateWithReport`에서 소스맵을 반환받을 수 있습니다. Vite에서는 대신 `build.sourcemap`을 설정합니다.
+
 Vite 전용 옵션:
 
 | 옵션 | 기본값 | 설명 |
@@ -147,7 +162,7 @@ Vite 전용 옵션:
 | `include` / `exclude` | 미설정 | 청크 파일명을 부분 문자열, `RegExp`, 판별 함수 또는 이들의 배열로 비교. 제외 조건 우선 |
 | `reportFile` | `ai-obfuscation-report.json` | 상대 경로의 `.json` 자산 이름. 보고서를 끄려면 `false` |
 
-각 코어 보고서는 `fileName`, 선택된 옵션, `sourceSha256`, `outputSha256`, `beforeBytes`, `afterBytes`, `sizeRatio`, `evaluation: 'not-performed'`를 포함합니다. Vite 보고서는 청크 이름과 함께 이를 `chunks`에 기록합니다. Vite 수치는 `renderChunk` 변환 단계 기준이므로 출력 훅과 렌더링을 거친 최종 파일의 바이트 수·해시와 다를 수 있습니다.
+각 코어 보고서는 `fileName`, 선택된 옵션, `sourceSha256`, `outputSha256`, `beforeBytes`, `afterBytes`, `sizeRatio`, `evaluation: 'not-performed'`를 포함합니다. Vite 보고서는 청크 이름과 함께 이를 `chunks`에 기록합니다. 입력 수치는 설정된 minify 이후 코드 기준이며, 출력 수치는 `renderChunk`의 난독화 결과 기준입니다. 출력 훅, 렌더링과 소스맵 링크를 거친 최종 파일의 바이트 수·해시와 다를 수 있습니다. 각 출력과 재빌드는 자체 보고서 항목을 생성합니다.
 
 ## 프리셋
 
@@ -169,7 +184,7 @@ npm run build:fixture
 npm pack --dry-run
 ```
 
-테스트는 모든 프리셋, 재현 가능한 출력, 옵션 검증, CLI 파일·디렉터리·스트림 처리, CJS 실행, Vite 청크 import, 동적 import, 마커 유지, 콘텐츠 해시, 제외 조건과 빌드 설정 거부를 확인합니다. Vite 실행 테스트는 Node의 ESM 로더를 사용하며 브라우저 E2E 테스트는 아닙니다. 기록된 환경과 결과는 [VALIDATION.md](VALIDATION.md)를 참고하세요.
+테스트는 모든 프리셋, 재현 가능한 출력, 옵션 검증, CLI 파일·디렉터리·스트림 처리, CJS 실행, Vite minify 백엔드, 청크 import, 동적 import, 마커 유지, 콘텐츠 해시, 제외 조건과 소스맵 출력을 확인합니다. 소스맵 검증에서는 변환된 코드에서 발생한 오류가 원본 코드의 해당 줄로 연결되는지 확인합니다. Vite 실행 테스트는 Node의 ESM 로더를 사용하며 브라우저 E2E 테스트는 아닙니다. 기록된 환경과 결과는 [VALIDATION.md](VALIDATION.md)를 참고하세요.
 
 ```text
 bin/                    CLI 진입점
